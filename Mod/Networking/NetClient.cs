@@ -7,30 +7,26 @@ using SFSEnhanced.Shared.Protocol;
 
 namespace SFSEnhanced.Mod.Networking
 {
-    /// <summary>
-    /// The game-side connection to an SFS Enhanced server. Talks the same
-    /// Shared/Protocol wire format the dedicated server speaks. Incoming
-    /// packets are queued and drained on the main thread via PumpIncoming()
-    /// (called from ModMain.Update) since Unity APIs aren't thread-safe.
-    /// </summary>
     public class NetClient
     {
         private TcpClient _tcp;
         private NetworkStream _stream;
         private CancellationTokenSource _cts;
+        private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
 
         public string PlayerId { get; private set; }
         public string AuthToken { get; private set; }
         public string CurrentWorldId { get; private set; }
         public bool IsConnected => _tcp?.Connected == true;
 
-        private readonly ConcurrentQueue<(PacketType type, string json)> _incoming = new();
+        private readonly ConcurrentQueue<(PacketType type, string json)> _incoming = new ConcurrentQueue<(PacketType type, string json)>();
 
-        // Subscribe from the mod's other systems (MultiBuildManager, FriendsUI, ...)
         public event Action<PacketType, string> OnPacket;
 
         public async Task<bool> ConnectAsync(string host, int port, string playerName)
         {
+            Disconnect();
+
             try
             {
                 _tcp = new TcpClient();
@@ -40,36 +36,47 @@ namespace SFSEnhanced.Mod.Networking
 
                 _ = ReadLoopAsync(_cts.Token);
 
-                await NetMessage.WriteAsync(_stream, PacketType.Hello, new HelloPacket
+                await SendAsync(PacketType.Hello, new HelloPacket
                 {
                     PlayerName = playerName,
-                    AuthToken = AuthToken, // null on first connect; PlayerPrefs-load this in a real build
+                    AuthToken = AuthToken,
                     ClientModVersion = "0.1.0",
                 });
 
-                return true; // HelloAck arrives asynchronously via OnPacket; caller can await that event
+                return true;
             }
             catch (Exception e)
             {
                 UnityEngine.Debug.LogError($"[SFSEnhanced] Connect failed: {e.Message}");
+                Disconnect();
                 return false;
             }
         }
 
         public void Disconnect()
         {
+            CurrentWorldId = null;
             _cts?.Cancel();
             try { _stream?.Dispose(); } catch { }
             try { _tcp?.Close(); } catch { }
+            _stream = null;
+            _tcp = null;
         }
 
         public async Task SendAsync(PacketType type, object payload)
         {
-            if (!IsConnected) return;
-            await NetMessage.WriteAsync(_stream, type, payload);
+            if (_stream == null || !IsConnected) return;
+            await _writeLock.WaitAsync();
+            try
+            {
+                await NetMessage.WriteAsync(_stream, type, payload);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
         }
 
-        /// <summary>Drain queued packets on the main/Unity thread. Call once per frame.</summary>
         public void PumpIncoming()
         {
             while (_incoming.TryDequeue(out var item))
@@ -82,11 +89,16 @@ namespace SFSEnhanced.Mod.Networking
                         PlayerId = ack.PlayerId;
                         if (!string.IsNullOrEmpty(ack.AuthToken)) AuthToken = ack.AuthToken;
                     }
+                    else
+                    {
+                        UnityEngine.Debug.LogError($"[SFSEnhanced] Login rejected: {ack.RejectReason}");
+                    }
                 }
                 else if (item.type == PacketType.WorldJoinAck)
                 {
                     var ack = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(item.json);
-                    if (ack.Accepted) CurrentWorldId = ack.WorldId;
+                    if (ack.Accepted)
+                        CurrentWorldId = ack.WorldId;
                 }
 
                 OnPacket?.Invoke(item.type, item.json);
@@ -97,16 +109,25 @@ namespace SFSEnhanced.Mod.Networking
         {
             try
             {
-                while (!ct.IsCancellationRequested)
+                while (!ct.IsCancellationRequested && _stream != null)
                 {
                     var (type, json) = await NetMessage.ReadRawAsync(_stream);
-                    if (json == null) break; // server closed the connection
+                    if (json == null) break;
                     _incoming.Enqueue((type, json));
                 }
             }
             catch (Exception e)
             {
-                UnityEngine.Debug.LogWarning($"[SFSEnhanced] Connection lost: {e.Message}");
+                if (!ct.IsCancellationRequested)
+                    UnityEngine.Debug.LogWarning($"[SFSEnhanced] Connection lost: {e.Message}");
+            }
+            finally
+            {
+                if (!ct.IsCancellationRequested)
+                {
+                    CurrentWorldId = null;
+                    try { _tcp?.Close(); } catch { }
+                }
             }
         }
     }
