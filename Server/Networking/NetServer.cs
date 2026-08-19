@@ -177,7 +177,7 @@ namespace SFSEnhanced.Server.Networking
             }
             finally
             {
-                if (playerId != null)
+                if (playerId != null && _connections.TryGetValue(playerId, out var current) && ReferenceEquals(current, conn))
                 {
                     HandleWorldLeave(conn, playerId);
                     _connections.TryRemove(playerId, out _);
