@@ -10,10 +10,6 @@ using UnityEngine.SceneManagement;
 
 namespace SFSEnhanced.Mod
 {
-    /// <summary>
-    /// Entry point for the game's built-in ModLoader (compiled into Assembly-CSharp).
-    /// No Harmony / third-party loader required.
-    /// </summary>
     public class ModMain : global::ModLoader.Mod
     {
         public const string ModId = "sfs-enhanced";
@@ -23,11 +19,9 @@ namespace SFSEnhanced.Mod
         public override string Author => "SFS Enhanced";
         public override string MinimumGameVersionNecessary => "1.5";
         public override string ModVersion => "0.1.0";
-        public override string Description =>
-            "Dedicated-server multiplayer, shared worlds, multi-build sync, friends & claims.";
+        public override string Description => "Multiplayer platform, dedicated servers, shared worlds, multi-build sync, friends, claims, and expanded SFS systems.";
 
         public static ModMain Instance { get; private set; }
-
         public NetClient Client { get; private set; }
         public MultiBuildManager Builds { get; private set; }
         public FriendsUI Friends { get; private set; }
@@ -38,7 +32,6 @@ namespace SFSEnhanced.Mod
         public override void Load()
         {
             Instance = this;
-
             Client = new NetClient();
             Builds = new MultiBuildManager(Client);
             Friends = new FriendsUI(Client);
@@ -49,9 +42,9 @@ namespace SFSEnhanced.Mod
             _host.AddComponent<ModLoop>().Bind(this);
 
             SceneHelper.OnWorldSceneLoaded += new Action<Scene>(_ => OnWorldLoaded());
-            SceneHelper.OnHomeSceneLoaded += new Action<Scene>(_ => Menu.Show());
+            SceneHelper.OnHomeSceneLoaded += new Action<Scene>(_ => Menu.AttachHomeButton());
 
-            Debug.Log("[SFSEnhanced] Loaded (native ModLoader). Open the multiplayer window from Home, or press F8 in-world.");
+            Debug.Log("[SFSEnhanced] Loaded. Multiplayer is available from the SFS main menu.");
         }
 
         private void OnWorldLoaded()
@@ -62,14 +55,14 @@ namespace SFSEnhanced.Mod
 
         public async void ConnectToServer(string host, int port, string playerName)
         {
+            ModSettings.Host = host;
+            ModSettings.Port = port;
+            ModSettings.PlayerName = playerName;
             bool ok = await Client.ConnectAsync(host, port, playerName);
-            Debug.Log(ok
-                ? $"[SFSEnhanced] Connected to {host}:{port} as {playerName}"
-                : "[SFSEnhanced] Connection failed.");
+            Debug.Log(ok ? $"[SFSEnhanced] Connected to {host}:{port} as {playerName}" : "[SFSEnhanced] Connection failed.");
         }
     }
 
-    /// <summary>Persistent MonoBehaviour that pumps net I/O every frame.</summary>
     internal sealed class ModLoop : MonoBehaviour
     {
         private ModMain _mod;
@@ -82,8 +75,7 @@ namespace SFSEnhanced.Mod
             _mod.Client?.PumpIncoming();
             _mod.Builds?.TickInterpolation(Time.deltaTime);
             _mod.Builds?.TickLocalPublish(Time.deltaTime);
-            if (Input.GetKeyDown(KeyCode.F8))
-                _mod.Menu?.Toggle();
+            if (Input.GetKeyDown(KeyCode.F8)) _mod.Menu?.Toggle();
         }
     }
 }
