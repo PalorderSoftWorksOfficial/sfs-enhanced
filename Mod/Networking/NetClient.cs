@@ -23,6 +23,11 @@ namespace SFSEnhanced.Mod.Networking
 
         public event Action<PacketType, string> OnPacket;
 
+        public NetClient()
+        {
+            AuthToken = SFSEnhanced.Mod.ModSettings.AuthToken;
+        }
+
         public async Task<bool> ConnectAsync(string host, int port, string playerName)
         {
             Disconnect();
@@ -34,8 +39,6 @@ namespace SFSEnhanced.Mod.Networking
                 _stream = _tcp.GetStream();
                 _cts = new CancellationTokenSource();
 
-                _ = ReadLoopAsync(_cts.Token);
-
                 await SendAsync(PacketType.Hello, new HelloPacket
                 {
                     PlayerName = playerName,
@@ -43,6 +46,7 @@ namespace SFSEnhanced.Mod.Networking
                     ClientModVersion = "0.1.0",
                 });
 
+                _ = ReadLoopAsync(_cts.Token);
                 return true;
             }
             catch (Exception e)
@@ -87,7 +91,11 @@ namespace SFSEnhanced.Mod.Networking
                     if (ack.Accepted)
                     {
                         PlayerId = ack.PlayerId;
-                        if (!string.IsNullOrEmpty(ack.AuthToken)) AuthToken = ack.AuthToken;
+                        if (!string.IsNullOrEmpty(ack.AuthToken))
+                        {
+                            AuthToken = ack.AuthToken;
+                            SFSEnhanced.Mod.ModSettings.AuthToken = ack.AuthToken;
+                        }
                     }
                     else
                     {
