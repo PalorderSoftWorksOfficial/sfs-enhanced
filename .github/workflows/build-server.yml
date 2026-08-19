@@ -1,0 +1,22 @@
+name: Build server
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet restore Server/SFSEnhanced.Server.csproj
+      - run: dotnet build Server/SFSEnhanced.Server.csproj --configuration Release --no-restore
+      - run: dotnet restore TestClient/SFSEnhanced.TestClient.csproj
+      - run: dotnet build TestClient/SFSEnhanced.TestClient.csproj --configuration Release --no-restore
