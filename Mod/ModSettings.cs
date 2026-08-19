@@ -2,13 +2,14 @@ using UnityEngine;
 
 namespace SFSEnhanced.Mod
 {
-    /// <summary>Persists connection identity across game launches via PlayerPrefs.</summary>
     public static class ModSettings
     {
         private const string HostKey = "sfs_enhanced.host";
         private const string PortKey = "sfs_enhanced.port";
         private const string NameKey = "sfs_enhanced.name";
         private const string TokenKey = "sfs_enhanced.token";
+        private const string DirectoryKey = "sfs_enhanced.directory";
+        private const string ServerExecutableKey = "sfs_enhanced.server_executable";
 
         public static string Host
         {
@@ -32,6 +33,18 @@ namespace SFSEnhanced.Mod
         {
             get => PlayerPrefs.GetString(TokenKey, "");
             set { PlayerPrefs.SetString(TokenKey, value ?? ""); PlayerPrefs.Save(); }
+        }
+
+        public static string DirectoryUrl
+        {
+            get => PlayerPrefs.GetString(DirectoryKey, "");
+            set { PlayerPrefs.SetString(DirectoryKey, value ?? ""); PlayerPrefs.Save(); }
+        }
+
+        public static string ServerExecutablePath
+        {
+            get => PlayerPrefs.GetString(ServerExecutableKey, "");
+            set { PlayerPrefs.SetString(ServerExecutableKey, value ?? ""); PlayerPrefs.Save(); }
         }
     }
 }
