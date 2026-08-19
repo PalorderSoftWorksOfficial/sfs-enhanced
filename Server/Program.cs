@@ -16,6 +16,13 @@ namespace SFSEnhanced.Server
         public string Motd = "Welcome! Build something cool.";
         public int MaxPlayers = 32;
         public string DataDir = "./data";
+        public bool Advertise;
+        public string DirectoryUrl;
+        public string PublicHost;
+        public string Region = "unknown";
+        public string GameVersion = "1.5+";
+        public string ModVersion = "0.1.0";
+        public bool PasswordProtected;
     }
 
     public static class Program
@@ -24,20 +31,18 @@ namespace SFSEnhanced.Server
         {
             var config = ParseArgs(args);
             Directory.CreateDirectory(config.DataDir);
-
             Console.WriteLine("=== SFS Enhanced Server ===");
             Console.WriteLine($"Name: {config.ServerName}");
             Console.WriteLine($"Port: {config.Port}");
             Console.WriteLine($"Data: {Path.GetFullPath(config.DataDir)}");
-            Console.WriteLine();
 
             var store = new FileStore(config.DataDir);
             var accounts = new AccountService(store);
             var worlds = new WorldManager(store);
             var friends = new FriendsService(accounts);
             var claims = new ClaimsService(worlds);
-
             var server = new NetServer(config, accounts, worlds, friends, claims);
+            var publisher = new ServerDirectoryPublisher(config);
 
             using var cts = new CancellationTokenSource();
             Console.CancelKeyPress += (_, e) =>
@@ -47,11 +52,10 @@ namespace SFSEnhanced.Server
             };
 
             var serverTask = server.RunAsync(cts.Token);
-
+            var directoryTask = publisher.RunAsync(server, cts.Token);
             Console.WriteLine("Server running. Commands: 'list', 'worlds', 'stop'");
             _ = Task.Run(() => ConsoleCommandLoop(server, cts));
-
-            await serverTask;
+            await Task.WhenAll(serverTask, directoryTask);
             Console.WriteLine("Server stopped.");
         }
 
@@ -86,22 +90,19 @@ namespace SFSEnhanced.Server
             {
                 switch (args[i])
                 {
-                    case "--port":
-                        config.Port = int.Parse(args[++i]);
-                        break;
-                    case "--name":
-                        config.ServerName = args[++i];
-                        break;
-                    case "--motd":
-                        config.Motd = args[++i];
-                        break;
-                    case "--max-players":
-                        config.MaxPlayers = int.Parse(args[++i]);
-                        break;
-                    case "--worlds":
+                    case "--port": config.Port = int.Parse(args[++i]); break;
+                    case "--name": config.ServerName = args[++i]; break;
+                    case "--motd": config.Motd = args[++i]; break;
+                    case "--max-players": config.MaxPlayers = int.Parse(args[++i]); break;
                     case "--data":
-                        config.DataDir = args[++i];
-                        break;
+                    case "--worlds": config.DataDir = args[++i]; break;
+                    case "--advertise": config.Advertise = true; break;
+                    case "--directory": config.DirectoryUrl = args[++i]; break;
+                    case "--public-host": config.PublicHost = args[++i]; break;
+                    case "--region": config.Region = args[++i]; break;
+                    case "--game-version": config.GameVersion = args[++i]; break;
+                    case "--mod-version": config.ModVersion = args[++i]; break;
+                    case "--password-protected": config.PasswordProtected = true; break;
                 }
             }
             return config;
