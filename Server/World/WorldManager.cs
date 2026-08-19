@@ -8,12 +8,6 @@ using SFSEnhanced.Shared.Protocol;
 
 namespace SFSEnhanced.Server.World
 {
-    /// <summary>
-    /// Owns every hosted world's authoritative state. Worlds are cached in memory
-    /// while active and flushed to the FileStore on every meaningful change
-    /// (build add/remove/claim change) plus periodically for position updates —
-    /// see NetServer's autosave loop.
-    /// </summary>
     public class WorldManager
     {
         private readonly FileStore _store;
@@ -63,8 +57,6 @@ namespace SFSEnhanced.Server.World
             foreach (var id in _cache.Keys) Persist(id);
         }
 
-        // ---- Builds ----
-
         public BuildSnapshot AddOrUpdateBuild(string worldId, BuildSnapshot build)
         {
             var world = Get(worldId);
@@ -72,6 +64,7 @@ namespace SFSEnhanced.Server.World
             world.Builds.RemoveAll(b => b.BuildId == build.BuildId);
             build.LastUpdatedUtc = DateTime.UtcNow;
             world.Builds.Add(build);
+            Persist(worldId);
             return build;
         }
 
@@ -95,7 +88,10 @@ namespace SFSEnhanced.Server.World
         public bool RemoveBuild(string worldId, string buildId)
         {
             var world = Get(worldId);
-            return world != null && world.Builds.RemoveAll(b => b.BuildId == buildId) > 0;
+            if (world == null) return false;
+            var removed = world.Builds.RemoveAll(b => b.BuildId == buildId) > 0;
+            if (removed) Persist(worldId);
+            return removed;
         }
 
         public BuildSnapshot FindBuild(string worldId, string buildId) =>
