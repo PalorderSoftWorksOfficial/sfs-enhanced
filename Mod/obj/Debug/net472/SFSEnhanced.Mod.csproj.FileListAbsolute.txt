@@ -1,0 +1,14 @@
+D:\sfs-enhanced\Mod\bin\Debug\net472\mod.json
+D:\sfs-enhanced\Mod\bin\Debug\net472\SFSEnhanced.dll
+D:\sfs-enhanced\Mod\bin\Debug\net472\SFSEnhanced.pdb
+D:\sfs-enhanced\Mod\bin\Debug\net472\Newtonsoft.Json.dll
+D:\sfs-enhanced\Mod\bin\Debug\net472\SFSEnhanced.Shared.dll
+D:\sfs-enhanced\Mod\bin\Debug\net472\SFSEnhanced.Shared.pdb
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhanced.Mod.csproj.AssemblyReference.cache
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhanced.Mod.GeneratedMSBuildEditorConfig.editorconfig
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhanced.Mod.AssemblyInfoInputs.cache
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhanced.Mod.AssemblyInfo.cs
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhanced.Mod.csproj.CoreCompileInputs.cache
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhan.5779E4E9.Up2Date
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhanced.dll
+D:\sfs-enhanced\Mod\obj\Debug\net472\SFSEnhanced.pdb

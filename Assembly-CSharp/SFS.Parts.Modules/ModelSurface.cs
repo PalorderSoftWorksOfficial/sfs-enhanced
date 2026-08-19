@@ -1,0 +1,43 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEngine;
+
+namespace SFS.Parts.Modules;
+
+public class ModelSurface : SurfaceData
+{
+	[Serializable]
+	public class Surface
+	{
+		public List<Vector2> points = new List<Vector2>();
+
+		public bool loop;
+	}
+
+	[HideInInspector]
+	public MeshFilter[] meshes = new MeshFilter[0];
+
+	public List<Surface> points = new List<Surface>
+	{
+		new Surface
+		{
+			points = new List<Vector2>()
+		}
+	};
+
+	private void GetMesh()
+	{
+		meshes = new MeshFilter[1] { GetComponent<MeshFilter>() };
+	}
+
+	private void GetAllMeshes()
+	{
+		meshes = base.transform.root.GetComponentsInChildren<MeshFilter>();
+	}
+
+	public override void Output()
+	{
+		SetData(points.Select((Surface surface) => new Surfaces(surface.points.ToArray(), surface.loop, base.transform)).ToList());
+	}
+}

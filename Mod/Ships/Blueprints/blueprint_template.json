@@ -1,0 +1,29 @@
+{
+  "_comment": "PLACEHOLDER SHAPE ONLY — replace with a real export from the game's own save/build format. Part IDs below are illustrative, not verified against any real SFS version.",
+  "buildName": "Kestrel (template)",
+  "buildKind": "Rocket",
+  "stages": [
+    {
+      "stageIndex": 0,
+      "parts": [
+        { "partId": "REPLACE_WITH_REAL_PART_ID_booster_engine", "position": [0, 0], "rotation": 0, "parentIndex": null },
+        { "partId": "REPLACE_WITH_REAL_PART_ID_fuel_tank_large", "position": [0, 1.5], "rotation": 0, "parentIndex": 0 }
+      ]
+    },
+    {
+      "stageIndex": 1,
+      "parts": [
+        { "partId": "REPLACE_WITH_REAL_PART_ID_vacuum_engine", "position": [0, 4.0], "rotation": 0, "parentIndex": 1 },
+        { "partId": "REPLACE_WITH_REAL_PART_ID_fuel_tank_medium", "position": [0, 5.2], "rotation": 0, "parentIndex": 2 }
+      ]
+    },
+    {
+      "stageIndex": 2,
+      "parts": [
+        { "partId": "REPLACE_WITH_REAL_PART_ID_capsule_2seat", "position": [0, 7.0], "rotation": 0, "parentIndex": 3 },
+        { "partId": "REPLACE_WITH_REAL_PART_ID_docking_port", "position": [0, 7.8], "rotation": 0, "parentIndex": 4 },
+        { "partId": "REPLACE_WITH_REAL_PART_ID_rcs_block", "position": [0.4, 7.0], "rotation": 90, "parentIndex": 4 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+D:\sfs-enhanced\Shared\bin\Debug\netstandard2.0\SFSEnhanced.Shared.deps.json
+D:\sfs-enhanced\Shared\bin\Debug\netstandard2.0\SFSEnhanced.Shared.dll
+D:\sfs-enhanced\Shared\bin\Debug\netstandard2.0\SFSEnhanced.Shared.pdb
+D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.csproj.AssemblyReference.cache
+D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.GeneratedMSBuildEditorConfig.editorconfig
+D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.AssemblyInfoInputs.cache
+D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.AssemblyInfo.cs
+D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.csproj.CoreCompileInputs.cache
+D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.dll
+D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.pdb

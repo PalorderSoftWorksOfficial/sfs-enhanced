@@ -1,0 +1,9 @@
+{
+  "id": "sfs-enhanced",
+  "name": "SFS Enhanced",
+  "version": "0.1.0",
+  "author": "SFS Enhanced",
+  "description": "Dedicated-server multiplayer, shared worlds, multi-build sync, friends & claims for Spaceflight Simulator.",
+  "assembly": "SFSEnhanced.dll",
+  "dependencies": []
+}

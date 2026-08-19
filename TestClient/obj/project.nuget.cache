@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "44zEd6kAE3U=",
+  "success": true,
+  "projectFilePath": "D:\\sfs-enhanced\\TestClient\\SFSEnhanced.TestClient.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\User\\.nuget\\packages\\newtonsoft.json\\13.0.3\\newtonsoft.json.13.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

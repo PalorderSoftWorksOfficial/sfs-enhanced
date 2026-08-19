@@ -1,0 +1,29 @@
+{
+  "WorldId": "c495e5dd949b46b2b8d1d158ef3ade3b",
+  "Name": "Test World",
+  "OwnerPlayerId": "61b7c7400f4d4445aa0c8a007430171d",
+  "IsPublic": true,
+  "PlanetPackId": null,
+  "CreatedUtc": "2026-08-14T05:37:38.5384902Z",
+  "LastModifiedUtc": "2026-08-15T08:03:38.5715268Z",
+  "Builds": [
+    {
+      "BuildId": "d1f7f2cc391c4ac6ad920c174ce01425",
+      "OwnerPlayerId": "61b7c7400f4d4445aa0c8a007430171d",
+      "OwnerPlayerName": "Alice",
+      "DisplayName": "Test Rocket",
+      "Kind": 0,
+      "PosX": 0.0,
+      "PosY": 0.0,
+      "VelX": 0.0,
+      "VelY": 0.0,
+      "RotationDegrees": 0.0,
+      "AngularVelocity": 0.0,
+      "PartsBlueprintJson": "{}",
+      "ControllingPlayerId": null,
+      "LastUpdatedUtc": "2026-08-14T05:37:39.5612539Z"
+    }
+  ],
+  "Claims": [],
+  "Whitelist": []
+}
