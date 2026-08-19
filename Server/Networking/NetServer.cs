@@ -315,14 +315,17 @@ namespace SFSEnhanced.Server.Networking
             }
 
             var buffer = _pendingUploads.GetOrAdd(chunk.UploadId, _ => new List<string>(new string[chunk.TotalChunks]));
+            bool countMismatch;
             lock (buffer)
             {
-                if (buffer.Count != chunk.TotalChunks)
-                {
-                    await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload chunk count mismatch." });
-                    return;
-                }
-                buffer[chunk.ChunkIndex] = chunk.Base64Data;
+                countMismatch = buffer.Count != chunk.TotalChunks;
+                if (!countMismatch)
+                    buffer[chunk.ChunkIndex] = chunk.Base64Data;
+            }
+            if (countMismatch)
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload chunk count mismatch." });
+                return;
             }
 
             bool complete;
@@ -353,6 +356,12 @@ namespace SFSEnhanced.Server.Networking
             var created = _worlds.Create(chunk.WorldName ?? uploaded.Name ?? "Uploaded World", playerId, chunk.IsPublic, uploaded.PlanetPackId);
             created.Builds = uploaded.Builds ?? new List<BuildSnapshot>();
             created.Claims = uploaded.Claims ?? new List<ClaimInfo>();
+            foreach (var build in created.Builds)
+            {
+                build.OwnerPlayerId = playerId;
+                build.OwnerPlayerName = conn.Account.PlayerName;
+            }
+            created.Claims.RemoveAll(c => c.OwnerPlayerId != playerId);
             _worlds.Persist(created.WorldId);
             _pendingUploads.TryRemove(chunk.UploadId, out _);
 
