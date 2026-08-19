@@ -9,18 +9,14 @@ using UnityEngine;
 
 namespace SFSEnhanced.Mod.World
 {
-    /// <summary>
-    /// Syncs every build in the joined world into the live World scene via
-    /// <see cref="RocketManager.LoadRocket"/> / <see cref="RocketSave"/>.
-    /// </summary>
     public class MultiBuildManager
     {
         private readonly NetClient _client;
-        private readonly Dictionary<string, RemoteBuild> _remoteBuilds = new();
+        private readonly Dictionary<string, RemoteBuild> _remoteBuilds = new Dictionary<string, RemoteBuild>();
         private float _publishTimer;
-        private const float PublishInterval = 0.1f; // 10 Hz local state broadcast
+        private const float PublishInterval = 0.1f;
 
-        public string LocalBuildId { get; set; }
+        public string LocalBuildId { get; private set; }
 
         public MultiBuildManager(NetClient client)
         {
@@ -30,12 +26,21 @@ namespace SFSEnhanced.Mod.World
 
         public void OnWorldSceneReady()
         {
-            // Re-apply any builds that arrived before the World scene was up.
             foreach (var remote in _remoteBuilds.Values.ToList())
             {
                 if (remote.Rocket == null && !string.IsNullOrEmpty(remote.PendingJson))
                     TrySpawnRocket(remote, remote.PendingJson);
             }
+        }
+
+        public void ResetWorld()
+        {
+            foreach (var remote in _remoteBuilds.Values.ToList())
+                DestroyRemoteRocket(remote);
+
+            _remoteBuilds.Clear();
+            LocalBuildId = null;
+            _publishTimer = 0f;
         }
 
         private void HandlePacket(PacketType type, string json)
@@ -44,13 +49,23 @@ namespace SFSEnhanced.Mod.World
             {
                 case PacketType.WorldJoinAck:
                     var ack = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(json);
-                    if (ack?.Builds == null) return;
-                    foreach (var build in ack.Builds)
-                        SpawnOrUpdateRemoteBuild(build);
+                    if (ack == null || !ack.Accepted) return;
+                    ResetWorld();
+                    foreach (var build in ack.Builds ?? new List<Shared.Models.BuildSnapshot>())
+                    {
+                        if (build.OwnerPlayerId == _client.PlayerId)
+                            LocalBuildId = build.BuildId;
+                        else
+                            SpawnOrUpdateRemoteBuild(build);
+                    }
+                    break;
+
+                case PacketType.WorldLeave:
+                    ResetWorld();
                     break;
 
                 case PacketType.BuildSpawn:
-                    SpawnOrUpdateRemoteBuild(Newtonsoft.Json.JsonConvert.DeserializeObject<BuildSnapshot>(json));
+                    SpawnOrUpdateRemoteBuild(Newtonsoft.Json.JsonConvert.DeserializeObject<Shared.Models.BuildSnapshot>(json));
                     break;
 
                 case PacketType.BuildStateUpdate:
@@ -58,13 +73,18 @@ namespace SFSEnhanced.Mod.World
                     break;
 
                 case PacketType.BuildRemove:
-                    var removed = Newtonsoft.Json.JsonConvert.DeserializeObject<BuildSnapshot>(json);
-                    if (removed != null) RemoveRemoteBuild(removed.BuildId);
+                    var removed = Newtonsoft.Json.JsonConvert.DeserializeObject<Shared.Models.BuildSnapshot>(json);
+                    if (removed != null)
+                    {
+                        if (removed.BuildId == LocalBuildId)
+                            LocalBuildId = null;
+                        RemoveRemoteBuild(removed.BuildId);
+                    }
                     break;
             }
         }
 
-        private void SpawnOrUpdateRemoteBuild(BuildSnapshot snapshot)
+        private void SpawnOrUpdateRemoteBuild(Shared.Models.BuildSnapshot snapshot)
         {
             if (snapshot == null || snapshot.BuildId == LocalBuildId) return;
 
@@ -74,8 +94,9 @@ namespace SFSEnhanced.Mod.World
                 existing.TargetVel = new Double2(snapshot.VelX, snapshot.VelY);
                 existing.TargetRotation = (float)snapshot.RotationDegrees;
                 existing.TargetAngularVelocity = (float)snapshot.AngularVelocity;
-                if (existing.Rocket == null && !string.IsNullOrEmpty(snapshot.PartsBlueprintJson))
-                    TrySpawnRocket(existing, snapshot.PartsBlueprintJson);
+                existing.PendingJson = string.IsNullOrEmpty(snapshot.PartsBlueprintJson) ? existing.PendingJson : snapshot.PartsBlueprintJson;
+                if (existing.Rocket == null && !string.IsNullOrEmpty(existing.PendingJson))
+                    TrySpawnRocket(existing, existing.PendingJson);
                 return;
             }
 
@@ -95,8 +116,6 @@ namespace SFSEnhanced.Mod.World
 
             if (GameManager.main != null && !string.IsNullOrEmpty(snapshot.PartsBlueprintJson))
                 TrySpawnRocket(remote, snapshot.PartsBlueprintJson);
-            else
-                Debug.Log($"[SFSEnhanced] Queued remote build '{snapshot.DisplayName}' until World scene is ready");
         }
 
         private void TrySpawnRocket(RemoteBuild remote, string rocketSaveJson)
@@ -120,7 +139,6 @@ namespace SFSEnhanced.Mod.World
                 return;
             }
 
-            // Tag so we can find it after LoadRocket (API returns void).
             save.rocketName = $"[MP]{remote.OwnerName}:{remote.BuildId}";
 
             var before = new HashSet<Rocket>(GameManager.main.rockets);
@@ -146,13 +164,12 @@ namespace SFSEnhanced.Mod.World
 
             remote.Rocket = spawned;
             remote.PendingJson = null;
-            ApplyTransform(remote, immediate: true);
-            Debug.Log($"[SFSEnhanced] Spawned remote rocket for {remote.OwnerName} ({remote.BuildId})");
+            ApplyTransform(remote, true);
         }
 
         private void ApplyStateUpdate(BuildStateUpdatePacket update)
         {
-            if (update == null) return;
+            if (update == null || update.BuildId == LocalBuildId) return;
             if (!_remoteBuilds.TryGetValue(update.BuildId, out var remote)) return;
 
             remote.TargetPos = new Double2(update.PosX, update.PosY);
@@ -164,26 +181,27 @@ namespace SFSEnhanced.Mod.World
         private void RemoveRemoteBuild(string buildId)
         {
             if (!_remoteBuilds.TryGetValue(buildId, out var remote)) return;
-
-            if (remote.Rocket != null)
-            {
-                try { RocketManager.DestroyRocket(remote.Rocket, DestructionReason.Intentional); }
-                catch (Exception e) { Debug.LogWarning($"[SFSEnhanced] DestroyRocket: {e.Message}"); }
-                remote.Rocket = null;
-            }
+            DestroyRemoteRocket(remote);
             _remoteBuilds.Remove(buildId);
+        }
+
+        private static void DestroyRemoteRocket(RemoteBuild remote)
+        {
+            if (remote.Rocket == null) return;
+            try { RocketManager.DestroyRocket(remote.Rocket, DestructionReason.Intentional); }
+            catch (Exception e) { Debug.LogWarning($"[SFSEnhanced] DestroyRocket failed: {e.Message}"); }
+            remote.Rocket = null;
         }
 
         public void TickInterpolation(float deltaTime)
         {
             foreach (var remote in _remoteBuilds.Values)
             {
-                if (remote.Rocket == null) continue;
-                ApplyTransform(remote, immediate: false, deltaTime);
+                if (remote.Rocket != null)
+                    ApplyTransform(remote, false, deltaTime);
             }
         }
 
-        /// <summary>Broadcast the local player's rocket at a fixed rate while connected + in world.</summary>
         public void TickLocalPublish(float deltaTime)
         {
             if (!_client.IsConnected || string.IsNullOrEmpty(_client.CurrentWorldId)) return;
@@ -197,39 +215,36 @@ namespace SFSEnhanced.Mod.World
             if (string.IsNullOrEmpty(LocalBuildId))
             {
                 LocalBuildId = Guid.NewGuid().ToString("N");
-                var snap = SnapshotFromRocket(local, LocalBuildId, _client.PlayerId);
-                PublishLocalBuild(snap);
+                PublishLocalBuild(SnapshotFromRocket(local, LocalBuildId, _client.PlayerId));
+                return;
             }
-            else
+
+            var loc = local.location.Value;
+            PublishLocalState(new BuildStateUpdatePacket
             {
-                var loc = local.location.Value;
-                PublishLocalState(new BuildStateUpdatePacket
-                {
-                    WorldId = _client.CurrentWorldId,
-                    BuildId = LocalBuildId,
-                    PosX = loc.position.x,
-                    PosY = loc.position.y,
-                    VelX = loc.velocity.x,
-                    VelY = loc.velocity.y,
-                    RotationDegrees = local.rb2d.transform.eulerAngles.z,
-                    AngularVelocity = local.rb2d.angularVelocity,
-                    ThrottlePercent = local.throttle.throttlePercent.Value,
-                });
-            }
+                WorldId = _client.CurrentWorldId,
+                BuildId = LocalBuildId,
+                PosX = loc.position.x,
+                PosY = loc.position.y,
+                VelX = loc.velocity.x,
+                VelY = loc.velocity.y,
+                RotationDegrees = local.rb2d.transform.eulerAngles.z,
+                AngularVelocity = local.rb2d.angularVelocity,
+                ThrottlePercent = local.throttle.throttlePercent.Value,
+            });
         }
 
         private void ApplyTransform(RemoteBuild remote, bool immediate, float deltaTime = 0.02f)
         {
             var rocket = remote.Rocket;
-            if (rocket == null || rocket.location?.Value?.planet == null) return;
+            if (rocket == null || rocket.location?.Value?.planet == null || WorldTime.main == null) return;
 
             var current = rocket.location.Value;
             Double2 pos = immediate
                 ? remote.TargetPos
                 : Double2.Lerp(current.position, remote.TargetPos, Mathf.Clamp01(deltaTime * 10f));
-            Double2 vel = remote.TargetVel;
 
-            var location = new Location(WorldTime.main.worldTime, current.planet, pos, vel);
+            var location = new Location(WorldTime.main.worldTime, current.planet, pos, remote.TargetVel);
             rocket.physics.SetLocationAndState(location, physicsMode: false);
             rocket.rb2d.transform.eulerAngles = new Vector3(0f, 0f, immediate
                 ? remote.TargetRotation
@@ -237,28 +252,27 @@ namespace SFSEnhanced.Mod.World
             rocket.rb2d.angularVelocity = remote.TargetAngularVelocity;
         }
 
-        public async void PublishLocalBuild(BuildSnapshot localSnapshot)
+        private async void PublishLocalBuild(Shared.Models.BuildSnapshot localSnapshot)
         {
-            LocalBuildId = localSnapshot.BuildId;
             await _client.SendAsync(PacketType.BuildSpawn, localSnapshot);
         }
 
-        public async void PublishLocalState(BuildStateUpdatePacket update)
+        private async void PublishLocalState(BuildStateUpdatePacket update)
         {
             await _client.SendAsync(PacketType.BuildStateUpdate, update);
         }
 
-        public static BuildSnapshot SnapshotFromRocket(Rocket rocket, string buildId, string ownerPlayerId)
+        private static Shared.Models.BuildSnapshot SnapshotFromRocket(Rocket rocket, string buildId, string ownerPlayerId)
         {
             var save = new RocketSave(rocket);
             var loc = rocket.location.Value;
-            return new BuildSnapshot
+            return new Shared.Models.BuildSnapshot
             {
                 BuildId = buildId,
                 OwnerPlayerId = ownerPlayerId,
                 OwnerPlayerName = save.rocketName,
                 DisplayName = save.rocketName,
-                Kind = BuildKind.Rocket,
+                Kind = Shared.Models.BuildKind.Rocket,
                 PosX = loc.position.x,
                 PosY = loc.position.y,
                 VelX = loc.velocity.x,
@@ -275,9 +289,11 @@ namespace SFSEnhanced.Mod.World
         {
             public string BuildId;
             public string OwnerName;
-            public BuildKind Kind;
-            public Double2 TargetPos, TargetVel;
-            public float TargetRotation, TargetAngularVelocity;
+            public Shared.Models.BuildKind Kind;
+            public Double2 TargetPos;
+            public Double2 TargetVel;
+            public float TargetRotation;
+            public float TargetAngularVelocity;
             public Rocket Rocket;
             public string PendingJson;
         }
