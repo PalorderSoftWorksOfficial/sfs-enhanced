@@ -22,12 +22,10 @@ namespace SFSEnhanced.Server.Networking
         private readonly WorldManager _worlds;
         private readonly FriendsService _friends;
         private readonly ClaimsService _claims;
+        private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
+        private readonly ConcurrentDictionary<string, List<string>> _pendingUploads = new();
 
-        private readonly ConcurrentDictionary<string, ClientConnection> _connections = new(); // key: PlayerId
-        private readonly ConcurrentDictionary<string, List<string>> _pendingUploads = new();  // uploadId -> chunks so far (base64)
-
-        public NetServer(ServerConfig config, AccountService accounts, WorldManager worlds,
-                          FriendsService friends, ClaimsService claims)
+        public NetServer(ServerConfig config, AccountService accounts, WorldManager worlds, FriendsService friends, ClaimsService claims)
         {
             _config = config;
             _accounts = accounts;
@@ -40,7 +38,6 @@ namespace SFSEnhanced.Server.Networking
         {
             var listener = new TcpListener(IPAddress.Any, _config.Port);
             listener.Start();
-
             var autosave = AutosaveLoopAsync(ct);
 
             try
@@ -48,15 +45,12 @@ namespace SFSEnhanced.Server.Networking
                 while (!ct.IsCancellationRequested)
                 {
                     var acceptTask = listener.AcceptTcpClientAsync();
-                    var completed = await Task.WhenAny(acceptTask, Task.Delay(Timeout.Infinite, ct))
-                        .ConfigureAwait(false);
-                    if (completed != acceptTask) break; // cancelled
-
-                    var tcpClient = acceptTask.Result;
-                    _ = HandleClientAsync(tcpClient, ct); // fire-and-forget per-client loop
+                    var completed = await Task.WhenAny(acceptTask, Task.Delay(Timeout.Infinite, ct)).ConfigureAwait(false);
+                    if (completed != acceptTask) break;
+                    _ = HandleClientAsync(acceptTask.Result, ct);
                 }
             }
-            catch (OperationCanceledException) { /* normal shutdown */ }
+            catch (OperationCanceledException) { }
             finally
             {
                 listener.Stop();
@@ -88,18 +82,16 @@ namespace SFSEnhanced.Server.Networking
                 while (!ct.IsCancellationRequested)
                 {
                     var (type, json) = await NetMessage.ReadRawAsync(conn.Stream);
-                    if (type == PacketType.Disconnect && json == null) break; // socket closed
+                    if (type == PacketType.Disconnect && json == null) break;
 
                     switch (type)
                     {
                         case PacketType.Hello:
                             playerId = await HandleHello(conn, Deserialize<HelloPacket>(json));
                             break;
-
                         case PacketType.Ping:
                             await conn.SendAsync(PacketType.Pong, null);
                             break;
-
                         case PacketType.ServerInfoRequest:
                             await conn.SendAsync(PacketType.ServerInfoResponse, new ServerInfoResponsePacket
                             {
@@ -110,7 +102,6 @@ namespace SFSEnhanced.Server.Networking
                                 ServerVersion = "0.1.0",
                             });
                             break;
-
                         case PacketType.WorldListRequest:
                             await conn.SendAsync(PacketType.WorldListResponse, new WorldListResponsePacket
                             {
@@ -123,74 +114,57 @@ namespace SFSEnhanced.Server.Networking
                                     PlayersOnline = _connections.Values.Count(c => c.CurrentWorldId == w.WorldId),
                                     BuildCount = w.Builds.Count,
                                     LastModifiedUtc = w.LastModifiedUtc,
-                                }).ToList()
+                                }).ToList(),
                             });
                             break;
-
                         case PacketType.WorldCreate:
                             await HandleWorldCreate(conn, playerId, Deserialize<WorldCreatePacket>(json));
                             break;
-
                         case PacketType.WorldJoin:
                             await HandleWorldJoin(conn, playerId, Deserialize<WorldJoinPacket>(json));
                             break;
-
                         case PacketType.WorldLeave:
                             HandleWorldLeave(conn, playerId);
                             break;
-
                         case PacketType.WorldUploadChunk:
                             await HandleWorldUploadChunk(conn, playerId, Deserialize<WorldUploadChunkPacket>(json));
                             break;
-
                         case PacketType.WorldDownloadRequest:
                             await HandleWorldDownloadRequest(conn, Deserialize<WorldJoinPacket>(json));
                             break;
-
                         case PacketType.BuildSpawn:
                             await HandleBuildSpawn(conn, playerId, Deserialize<BuildSnapshot>(json));
                             break;
-
                         case PacketType.BuildStateUpdate:
                             await HandleBuildStateUpdate(conn, playerId, Deserialize<BuildStateUpdatePacket>(json));
                             break;
-
                         case PacketType.BuildRemove:
                             await HandleBuildRemove(conn, playerId, Deserialize<BuildSnapshot>(json));
                             break;
-
                         case PacketType.BuildControlRequest:
                             await HandleBuildControlRequest(conn, playerId, Deserialize<BuildControlRequestPacket>(json));
                             break;
-
                         case PacketType.FriendRequest:
                             await HandleFriendRequest(conn, Deserialize<FriendRequestPacket>(json));
                             break;
-
                         case PacketType.FriendRequestResponse:
                             await HandleFriendResponse(conn, Deserialize<FriendRequestResponsePacket>(json));
                             break;
-
                         case PacketType.FriendListRequest:
                             await conn.SendAsync(PacketType.FriendListResponse, _friends.BuildFriendList(conn.Account));
                             break;
-
                         case PacketType.ClaimCreate:
                             await HandleClaimCreate(conn, Deserialize<ClaimCreatePacket>(json));
                             break;
-
                         case PacketType.ChatMessage:
                             await HandleChat(conn, Deserialize<ChatMessagePacket>(json));
                             break;
-
                         case PacketType.TimeWarpRequest:
                             await HandleTimeWarp(conn, playerId, Deserialize<TimeWarpRequestPacket>(json));
                             break;
-
                         case PacketType.FriendInviteToWorld:
                             await HandleFriendInvite(conn, Deserialize<FriendInviteToWorldPacket>(json));
                             break;
-
                         default:
                             await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = $"Unhandled packet {type}" });
                             break;
@@ -214,13 +188,16 @@ namespace SFSEnhanced.Server.Networking
             }
         }
 
-        // ---- Handlers ----
-
         private async Task<string> HandleHello(ClientConnection conn, HelloPacket hello)
         {
-            PlayerAccount account = null;
+            if (hello == null || string.IsNullOrWhiteSpace(hello.PlayerName))
+            {
+                await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "A player name is required." });
+                return null;
+            }
 
-            if (!string.IsNullOrEmpty(hello?.AuthToken))
+            PlayerAccount account = null;
+            if (!string.IsNullOrEmpty(hello.AuthToken))
             {
                 var byName = _accounts.FindByName(hello.PlayerName);
                 if (byName != null && _accounts.ValidateToken(byName, hello.AuthToken))
@@ -230,19 +207,23 @@ namespace SFSEnhanced.Server.Networking
             string issuedToken = null;
             if (account == null)
             {
-                if (_accounts.FindByName(hello?.PlayerName) != null)
+                if (_accounts.FindByName(hello.PlayerName) != null)
                 {
                     await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket
                     {
                         Accepted = false,
-                        RejectReason = "That name is taken and the auth token didn't match. Use a different name or your saved token.",
+                        RejectReason = "That name is taken and the auth token didn't match.",
                     });
                     return null;
                 }
-                var (newAccount, token) = _accounts.CreateAccount(hello.PlayerName);
-                account = newAccount;
-                issuedToken = token;
+
+                var created = _accounts.CreateAccount(hello.PlayerName);
+                account = created.Item1;
+                issuedToken = created.Item2;
             }
+
+            if (_connections.TryGetValue(account.PlayerId, out var oldConnection))
+                oldConnection.Close();
 
             conn.Account = account;
             _accounts.Touch(account);
@@ -253,7 +234,7 @@ namespace SFSEnhanced.Server.Networking
             {
                 Accepted = true,
                 PlayerId = account.PlayerId,
-                AuthToken = issuedToken, // null if reusing an existing token — client keeps its own
+                AuthToken = issuedToken,
             });
 
             Console.WriteLine($"[connect] {account.PlayerName} ({account.PlayerId})");
@@ -262,7 +243,11 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task HandleWorldCreate(ClientConnection conn, string playerId, WorldCreatePacket req)
         {
-            var world = _worlds.Create(req.Name, playerId, req.IsPublic, req.PlanetPackId);
+            if (conn.Account == null || playerId == null || req == null || string.IsNullOrWhiteSpace(req.Name)) return;
+            HandleWorldLeave(conn, playerId);
+            var world = _worlds.Create(req.Name.Trim(), playerId, req.IsPublic, req.PlanetPackId);
+            conn.CurrentWorldId = world.WorldId;
+            _friends.SetCurrentWorld(playerId, world.WorldId);
             await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket
             {
                 Accepted = true,
@@ -271,25 +256,31 @@ namespace SFSEnhanced.Server.Networking
                 Claims = world.Claims,
                 PlayersOnline = new List<string> { conn.Account.PlayerName },
             });
-            conn.CurrentWorldId = world.WorldId;
-            _friends.SetCurrentWorld(playerId, world.WorldId);
         }
 
         private async Task HandleWorldJoin(ClientConnection conn, string playerId, WorldJoinPacket req)
         {
-            var world = _worlds.Get(req.WorldId);
+            var world = req == null ? null : _worlds.Get(req.WorldId);
             if (world == null)
             {
                 await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "World not found." });
                 return;
             }
 
+            if (!world.IsPublic && world.OwnerPlayerId != playerId && !_friends.AreFriends(world.OwnerPlayerId, playerId))
+            {
+                await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "This world is private." });
+                return;
+            }
+
+            HandleWorldLeave(conn, playerId);
             conn.CurrentWorldId = world.WorldId;
             _friends.SetCurrentWorld(playerId, world.WorldId);
 
             var playersInWorld = _connections.Values
-                .Where(c => c.CurrentWorldId == world.WorldId)
+                .Where(c => c.CurrentWorldId == world.WorldId && c.Account != null)
                 .Select(c => c.Account.PlayerName)
+                .Distinct()
                 .ToList();
 
             await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket
@@ -306,7 +297,7 @@ namespace SFSEnhanced.Server.Networking
                 WorldId = world.WorldId,
                 FromPlayerName = "Server",
                 Message = $"{conn.Account.PlayerName} joined the world.",
-            }, exceptPlayerId: null);
+            }, null);
         }
 
         private void HandleWorldLeave(ClientConnection conn, string playerId)
@@ -317,42 +308,75 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task HandleWorldUploadChunk(ClientConnection conn, string playerId, WorldUploadChunkPacket chunk)
         {
-            var buffer = _pendingUploads.GetOrAdd(chunk.UploadId, _ => new List<string>(new string[chunk.TotalChunks]));
-            buffer[chunk.ChunkIndex] = chunk.Base64Data;
-
-            if (buffer.All(b => b != null))
+            if (chunk == null || string.IsNullOrEmpty(chunk.UploadId) || chunk.TotalChunks <= 0 || chunk.ChunkIndex < 0 || chunk.ChunkIndex >= chunk.TotalChunks || string.IsNullOrEmpty(chunk.Base64Data))
             {
-                string fullJson = Encoding.UTF8.GetString(Convert.FromBase64String(string.Concat(buffer)));
-                var uploaded = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldRecord>(fullJson);
-                uploaded.WorldId = Guid.NewGuid().ToString("N");
-                uploaded.OwnerPlayerId = playerId;
-                uploaded.Name = chunk.WorldName ?? uploaded.Name;
-                uploaded.IsPublic = chunk.IsPublic;
-
-                var created = _worlds.Create(uploaded.Name, playerId, uploaded.IsPublic, uploaded.PlanetPackId);
-                // merge builds/claims from the uploaded file into the freshly-created record
-                created.Builds = uploaded.Builds;
-                created.Claims = uploaded.Claims;
-                _worlds.Persist(created.WorldId);
-
-                _pendingUploads.TryRemove(chunk.UploadId, out _);
-
-                await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket
-                {
-                    Accepted = true,
-                    WorldId = created.WorldId,
-                    Builds = created.Builds,
-                    Claims = created.Claims,
-                });
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Invalid upload chunk." });
+                return;
             }
+
+            var buffer = _pendingUploads.GetOrAdd(chunk.UploadId, _ => new List<string>(new string[chunk.TotalChunks]));
+            lock (buffer)
+            {
+                if (buffer.Count != chunk.TotalChunks)
+                {
+                    await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload chunk count mismatch." });
+                    return;
+                }
+                buffer[chunk.ChunkIndex] = chunk.Base64Data;
+            }
+
+            bool complete;
+            lock (buffer) complete = buffer.All(b => b != null);
+            if (!complete) return;
+
+            string fullJson;
+            lock (buffer) fullJson = Encoding.UTF8.GetString(Convert.FromBase64String(string.Concat(buffer)));
+            WorldRecord uploaded;
+            try
+            {
+                uploaded = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldRecord>(fullJson);
+            }
+            catch
+            {
+                _pendingUploads.TryRemove(chunk.UploadId, out _);
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Uploaded world data is invalid." });
+                return;
+            }
+
+            if (uploaded == null)
+            {
+                _pendingUploads.TryRemove(chunk.UploadId, out _);
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Uploaded world data is empty." });
+                return;
+            }
+
+            var created = _worlds.Create(chunk.WorldName ?? uploaded.Name ?? "Uploaded World", playerId, chunk.IsPublic, uploaded.PlanetPackId);
+            created.Builds = uploaded.Builds ?? new List<BuildSnapshot>();
+            created.Claims = uploaded.Claims ?? new List<ClaimInfo>();
+            _worlds.Persist(created.WorldId);
+            _pendingUploads.TryRemove(chunk.UploadId, out _);
+
+            await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket
+            {
+                Accepted = true,
+                WorldId = created.WorldId,
+                Builds = created.Builds,
+                Claims = created.Claims,
+            });
         }
 
         private async Task HandleWorldDownloadRequest(ClientConnection conn, WorldJoinPacket req)
         {
-            var world = _worlds.Get(req.WorldId);
+            var world = req == null ? null : _worlds.Get(req.WorldId);
             if (world == null)
             {
                 await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "World not found." });
+                return;
+            }
+
+            if (!world.IsPublic && conn.Account?.PlayerId != world.OwnerPlayerId && !_friends.AreFriends(world.OwnerPlayerId, conn.Account?.PlayerId))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "This world is private." });
                 return;
             }
 
@@ -403,7 +427,7 @@ namespace SFSEnhanced.Server.Networking
                 });
             }
 
-            await BroadcastToWorld(conn.CurrentWorldId, PacketType.BuildSpawn, saved, exceptPlayerId: playerId);
+            await BroadcastToWorld(conn.CurrentWorldId, PacketType.BuildSpawn, saved, playerId);
         }
 
         private async Task HandleBuildStateUpdate(ClientConnection conn, string playerId, BuildStateUpdatePacket update)
@@ -412,9 +436,7 @@ namespace SFSEnhanced.Server.Networking
             var build = _worlds.FindBuild(conn.CurrentWorldId, update.BuildId);
             if (build == null) return;
 
-            bool owns = build.OwnerPlayerId == playerId;
-            bool controls = build.ControllingPlayerId == playerId;
-            if (!owns && !controls)
+            if (build.OwnerPlayerId != playerId && build.ControllingPlayerId != playerId)
             {
                 await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Not your rocket." });
                 return;
@@ -434,36 +456,47 @@ namespace SFSEnhanced.Server.Networking
 
             update.WorldId = conn.CurrentWorldId;
             _worlds.ApplyStateUpdate(conn.CurrentWorldId, update);
-            await BroadcastToWorld(conn.CurrentWorldId, PacketType.BuildStateUpdate, update, exceptPlayerId: playerId);
+            await BroadcastToWorld(conn.CurrentWorldId, PacketType.BuildStateUpdate, update, playerId);
         }
 
         private async Task HandleBuildRemove(ClientConnection conn, string playerId, BuildSnapshot build)
         {
-            if (conn.CurrentWorldId == null) return;
-            if (!_claims.CanInteract(conn.CurrentWorldId, build.BuildId, playerId)) return;
+            if (conn.CurrentWorldId == null || build == null) return;
+            var existing = _worlds.FindBuild(conn.CurrentWorldId, build.BuildId);
+            if (existing == null) return;
+
+            if (existing.OwnerPlayerId != playerId)
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Cannot remove another player's build." });
+                return;
+            }
+
+            if (!_claims.CanInteract(conn.CurrentWorldId, build.BuildId, playerId))
+            {
+                await conn.SendAsync(PacketType.ClaimDenied, new ClaimDeniedPacket { Reason = "This build is claimed by another player." });
+                return;
+            }
+
             _worlds.RemoveBuild(conn.CurrentWorldId, build.BuildId);
-            await BroadcastToWorld(conn.CurrentWorldId, PacketType.BuildRemove, build, exceptPlayerId: playerId);
+            await BroadcastToWorld(conn.CurrentWorldId, PacketType.BuildRemove, build, playerId);
         }
 
         private async Task HandleBuildControlRequest(ClientConnection conn, string playerId, BuildControlRequestPacket req)
         {
+            if (req == null || req.WorldId != conn.CurrentWorldId) return;
             var build = _worlds.FindBuild(req.WorldId, req.BuildId);
             if (build == null) return;
 
+            bool owner = build.OwnerPlayerId == playerId;
             bool free = build.ControllingPlayerId == null || build.ControllingPlayerId == playerId;
             bool allowed = _claims.CanInteract(req.WorldId, req.BuildId, playerId);
+            bool canControl = owner || _friends.AreFriends(build.OwnerPlayerId, playerId);
 
-            if (free && allowed)
+            if (free && allowed && canControl)
             {
                 build.ControllingPlayerId = playerId;
-                await conn.SendAsync(PacketType.BuildControlGrant, new BuildControlGrantPacket
-                {
-                    BuildId = req.BuildId, Granted = true, ControllingPlayerId = playerId,
-                });
-                await BroadcastToWorld(req.WorldId, PacketType.BuildControlGrant, new BuildControlGrantPacket
-                {
-                    BuildId = req.BuildId, Granted = true, ControllingPlayerId = playerId,
-                }, exceptPlayerId: playerId);
+                await conn.SendAsync(PacketType.BuildControlGrant, new BuildControlGrantPacket { BuildId = req.BuildId, Granted = true, ControllingPlayerId = playerId });
+                await BroadcastToWorld(req.WorldId, PacketType.BuildControlGrant, new BuildControlGrantPacket { BuildId = req.BuildId, Granted = true, ControllingPlayerId = playerId }, playerId);
             }
             else
             {
@@ -471,7 +504,7 @@ namespace SFSEnhanced.Server.Networking
                 {
                     BuildId = req.BuildId,
                     Granted = false,
-                    DenyReason = !allowed ? "Build is claimed by another player." : "Another player is already piloting this.",
+                    DenyReason = !canControl ? "You are not allowed to control this build." : !allowed ? "Build is claimed by another player." : "Another player is already piloting this.",
                 });
             }
         }
@@ -486,15 +519,13 @@ namespace SFSEnhanced.Server.Networking
             }
             var target = _accounts.FindByName(req.TargetPlayerName);
             if (target != null && _connections.TryGetValue(target.PlayerId, out var targetConn))
-            {
                 await targetConn.SendAsync(PacketType.FriendListResponse, _friends.BuildFriendList(target));
-            }
             await conn.SendAsync(PacketType.FriendListResponse, _friends.BuildFriendList(conn.Account));
         }
 
         private async Task HandleFriendResponse(ClientConnection conn, FriendRequestResponsePacket resp)
         {
-            _friends.RespondToRequest(conn.Account, resp.FromPlayerId, resp.Accepted);
+            if (resp == null || !_friends.RespondToRequest(conn.Account, resp.FromPlayerId, resp.Accepted)) return;
             await conn.SendAsync(PacketType.FriendListResponse, _friends.BuildFriendList(conn.Account));
             if (_connections.TryGetValue(resp.FromPlayerId, out var otherConn))
                 await otherConn.SendAsync(PacketType.FriendListResponse, _friends.BuildFriendList(otherConn.Account));
@@ -502,29 +533,59 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task HandleClaimCreate(ClientConnection conn, ClaimCreatePacket req)
         {
+            if (req == null || req.WorldId != conn.CurrentWorldId) return;
+            var world = _worlds.Get(req.WorldId);
+            if (world == null) return;
+
+            if (req.Shape == ClaimShape.Build)
+            {
+                var build = _worlds.FindBuild(req.WorldId, req.BuildId);
+                if (build == null || build.OwnerPlayerId != conn.Account.PlayerId)
+                {
+                    await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "You can only claim your own build." });
+                    return;
+                }
+            }
+
+            if (req.Shape == ClaimShape.Region)
+            {
+                if (req.RadiusMeters <= 0 || req.RadiusMeters > 5000000)
+                {
+                    await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Invalid claim radius." });
+                    return;
+                }
+            }
+
             var claim = _claims.Create(req.WorldId, conn.Account.PlayerId, conn.Account.PlayerName, req);
             if (claim != null)
-                await BroadcastToWorld(req.WorldId, PacketType.ClaimCreate, claim, exceptPlayerId: null);
+                await BroadcastToWorld(req.WorldId, PacketType.ClaimCreate, claim, null);
         }
 
         private async Task HandleChat(ClientConnection conn, ChatMessagePacket msg)
         {
+            if (msg == null) return;
             msg.FromPlayerName = conn.Account.PlayerName;
             msg.SentUtc = DateTime.UtcNow;
             if (msg.WorldId != null)
-                await BroadcastToWorld(msg.WorldId, PacketType.ChatMessage, msg, exceptPlayerId: null);
+            {
+                if (msg.WorldId != conn.CurrentWorldId) return;
+                await BroadcastToWorld(msg.WorldId, PacketType.ChatMessage, msg, null);
+            }
             else
-                await BroadcastToAll(PacketType.ChatMessage, msg, exceptPlayerId: null);
+            {
+                await BroadcastToAll(PacketType.ChatMessage, msg, null);
+            }
         }
 
         private async Task HandleTimeWarp(ClientConnection conn, string playerId, TimeWarpRequestPacket req)
         {
             if (conn.CurrentWorldId == null || req == null) return;
+            if (req.WorldId != null && req.WorldId != conn.CurrentWorldId) return;
             var world = _worlds.Get(conn.CurrentWorldId);
             if (world == null) return;
 
             bool locked = IsProximityLocked(world, playerId);
-            double requested = req.RequestedMultiplier < 1 ? 1 : req.RequestedMultiplier;
+            double requested = req.RequestedMultiplier < 1 ? 1 : Math.Min(req.RequestedMultiplier, 1000);
             double actual = locked && requested > 1.0 ? 1.0 : requested;
 
             await BroadcastToWorld(conn.CurrentWorldId, PacketType.TimeWarpState, new TimeWarpStatePacket
@@ -532,13 +593,9 @@ namespace SFSEnhanced.Server.Networking
                 WorldId = conn.CurrentWorldId,
                 ActualMultiplier = actual,
                 LockedByProximity = locked,
-            }, exceptPlayerId: null);
+            }, null);
         }
 
-        /// <summary>
-        /// True when another player's build is within 50 km of one of this player's builds.
-        /// Nearby co-op should not free-warp or the two sims diverge.
-        /// </summary>
         private static bool IsProximityLocked(WorldRecord world, string playerId)
         {
             const double radiusMeters = 50_000;
@@ -561,10 +618,16 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task HandleFriendInvite(ClientConnection conn, FriendInviteToWorldPacket invite)
         {
-            var target = _accounts.FindByName(invite?.TargetPlayerName);
+            if (invite == null) return;
+            var target = _accounts.FindByName(invite.TargetPlayerName);
             if (target == null)
             {
                 await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Player not found." });
+                return;
+            }
+            if (!_friends.AreFriends(conn.Account.PlayerId, target.PlayerId))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "You can only invite a friend." });
                 return;
             }
             if (!_connections.TryGetValue(target.PlayerId, out var targetConn))
@@ -574,37 +637,34 @@ namespace SFSEnhanced.Server.Networking
             }
 
             string worldId = invite.WorldId ?? conn.CurrentWorldId;
+            if (worldId == null || _worlds.Get(worldId) == null)
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "World not found." });
+                return;
+            }
+
             await targetConn.SendAsync(PacketType.FriendInviteToWorld, new FriendInviteToWorldPacket
             {
                 TargetPlayerName = conn.Account.PlayerName,
                 WorldId = worldId,
             });
-            await targetConn.SendAsync(PacketType.ChatMessage, new ChatMessagePacket
-            {
-                FromPlayerName = "Server",
-                Message = $"{conn.Account.PlayerName} invited you to a world. WorldId: {worldId}",
-            });
         }
-
-        // ---- Broadcast helpers ----
 
         private async Task BroadcastToWorld(string worldId, PacketType type, object payload, string exceptPlayerId)
         {
-            var targets = _connections.Where(kv => kv.Value.CurrentWorldId == worldId && kv.Key != exceptPlayerId);
-            foreach (var kv in targets)
-                await kv.Value.SendAsync(type, payload);
+            var targets = _connections.Where(kv => kv.Value.CurrentWorldId == worldId && kv.Key != exceptPlayerId).Select(kv => kv.Value).ToList();
+            foreach (var target in targets)
+                await target.SendAsync(type, payload);
         }
 
         private async Task BroadcastToAll(PacketType type, object payload, string exceptPlayerId)
         {
-            foreach (var kv in _connections.Where(kv => kv.Key != exceptPlayerId))
-                await kv.Value.SendAsync(type, payload);
+            var targets = _connections.Where(kv => kv.Key != exceptPlayerId).Select(kv => kv.Value).ToList();
+            foreach (var target in targets)
+                await target.SendAsync(type, payload);
         }
 
-        private static T Deserialize<T>(string json) =>
-            json == null ? default : Newtonsoft.Json.JsonConvert.DeserializeObject<T>(json);
-
-        // ---- Console diagnostics ----
+        private static T Deserialize<T>(string json) => json == null ? default : Newtonsoft.Json.JsonConvert.DeserializeObject<T>(json);
 
         public void PrintConnectedPlayers()
         {
