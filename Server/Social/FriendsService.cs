@@ -6,17 +6,9 @@ using SFSEnhanced.Shared.Protocol;
 
 namespace SFSEnhanced.Server.Social
 {
-    /// <summary>
-    /// Server-side friends list, persisted on the PlayerAccount so it survives
-    /// restarts and follows the player across whichever world they're in —
-    /// matches "friends are server-side, not a code you paste in" from
-    /// docs/FEATURE_RESEARCH.md.
-    /// </summary>
     public class FriendsService
     {
         private readonly AccountService _accounts;
-
-        // playerId -> connected? (NetServer updates this on connect/disconnect)
         private readonly ConcurrentDictionary<string, bool> _online = new();
         private readonly ConcurrentDictionary<string, string> _currentWorld = new();
 
@@ -28,7 +20,13 @@ namespace SFSEnhanced.Server.Social
             if (!online) _currentWorld.TryRemove(playerId, out _);
         }
 
-        public void SetCurrentWorld(string playerId, string worldId) => _currentWorld[playerId] = worldId;
+        public void SetCurrentWorld(string playerId, string worldId)
+        {
+            if (string.IsNullOrEmpty(worldId))
+                _currentWorld.TryRemove(playerId, out _);
+            else
+                _currentWorld[playerId] = worldId;
+        }
 
         public bool RequestFriend(PlayerAccount requester, string targetName, out string error)
         {
@@ -91,6 +89,7 @@ namespace SFSEnhanced.Server.Social
 
         public bool AreFriends(string playerIdA, string playerIdB)
         {
+            if (string.IsNullOrEmpty(playerIdA) || string.IsNullOrEmpty(playerIdB)) return false;
             var a = _accounts.FindById(playerIdA);
             return a != null && a.FriendPlayerIds.Contains(playerIdB);
         }
