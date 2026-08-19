@@ -1,86 +1,120 @@
-# SFS Enhanced — Multiplayer & World Tools for Spaceflight Simulator
+# SFS Enhanced — The Multiplayer Platform & Gameplay Expansion for Spaceflight Simulator
 
-A community mod project adding **dedicated-server multiplayer**, **shared/uploadable worlds**,
-**multiple builds per world**, **friends & claims**, and two new stock rocket designs to
-*Spaceflight Simulator* (SFS) by Team Curiosity.
+SFS Enhanced is being built as a platform layer for *Spaceflight Simulator*: a first-class multiplayer experience, player-hosted dedicated servers, public server discovery, persistent shared worlds, social systems, creator tools, and large-scale gameplay expansions.
 
-> **Read this first.** SFS ships a **built-in mod loader** (`ModLoader.Mod` inside
-> `Assembly-CSharp.dll`) plus `SFS.UI.ModGUI`. This project targets that API —
-> **no Harmony and no third-party loader required.** Game-side code lives in `Mod/`
-> and compiles against the DLLs in repo-root `Dependencies/`. The decompiled game
-> sources in `Assembly-CSharp/` are the reference for hooks.
->
-> The `Server/` and `Shared/` projects are **plain .NET, zero game dependency** —
-> worlds, players, friends, claims, persistence, and the wire protocol run without
-> SFS installed.
+SFS provides a built-in mod loader (`ModLoader.Mod` inside `Assembly-CSharp.dll`) and `SFS.UI.ModGUI`. This project targets those native APIs without Harmony or another third-party loader.
 
-This is a genuinely large project (this is basically "write a multiplayer backend + a game
-mod" — the kind of thing real SFS multiplayer mods, like `AstarLC4036/SFS-Multiplayer`, took
-months to get partially working). What's here is a serious, correct starting point, not a
-finished polished product — treat it as v0.1.
+The `Server/`, `Directory/`, and `Shared/` projects do not require SFS to run. The game-side integration lives in `Mod/`.
 
-## What's included
+## Current platform
 
-| Piece | Status |
+| Feature | Status |
 |---|---|
-| Dedicated server (TCP, async, multi-room) | Working, testable now (`dotnet run` in `Server/`) |
-| Wire protocol (login, world sync, rocket state, chat) | Working |
-| World persistence (JSON world store, versioned) | Working |
-| Multiple builds per world (bases + rockets coexist) | Working data model, needs game-side render hook |
-| Friends system (add/accept/list/invite-to-world) | Working (server) |
-| Claims system (protect a build/region from other players) | Working (server) |
-| World upload/download (share your world file with a server) | Working (server) |
-| Two new stock rocket blueprints | JSON templates included, see note below |
-| Game-side mod (native ModLoader, ModGUI, rocket sync hooks) | Wired to real SFS APIs — in-game testing next |
+| Dedicated TCP server | Implemented |
+| Persistent player identity | Implemented |
+| Shared worlds | Implemented |
+| Multiple builds per world | Implemented |
+| Remote rocket synchronization | Implemented foundation |
+| Build ownership and claims | Implemented foundation |
+| Friends and world invites | Implemented foundation |
+| World upload/download | Implemented foundation |
+| Main-menu Multiplayer button | Implemented |
+| Multiplayer front door UI | Implemented |
+| Direct server connection | Implemented |
+| Player-hosted dedicated server launch | Implemented foundation |
+| Public server directory service | Implemented |
+| Server advertising and heartbeat | Implemented |
+| Public server browser | Implemented client foundation |
+| Time-warp arbitration | Implemented foundation |
+| Missions and events | Planned |
+| Factions and economies | Planned |
+| Creator/blueprint platform | Planned |
 
-## Repo layout
+## Architecture
 
+```text
+SFS Enhanced Mod
+  |
+  +-- Multiplayer UI
+  |     +-- Browse Servers
+  |     +-- Host Server
+  |     +-- Direct Connect
+  |     +-- World management
+  |
+  +-- NetClient
+  |     +-- persistent player identity
+  |     +-- live world synchronization
+  |
+  +-- Shared protocol/models
+  |
+  +-- Dedicated Server
+  |     +-- accounts
+  |     +-- worlds
+  |     +-- builds
+  |     +-- claims
+  |     +-- friends
+  |     +-- chat
+  |     +-- time-warp arbitration
+  |
+  +-- Server Directory
+        +-- public server listings
+        +-- registration
+        +-- heartbeat
+        +-- expiration
 ```
+
+## Repository layout
+
+```text
 sfs-enhanced/
-  Shared/      # protocol + data models used by both Server and Mod
-  Server/      # dedicated server console app — no Unity/game dependency
-  TestClient/  # plain console client to exercise the server without the game
-  Mod/         # the actual .dll that goes in the game's Mods folder
-  docs/        # architecture notes, feature research, setup guide
+  Shared/      protocol and models shared by Server and Mod
+  Server/      dedicated multiplayer server
+  Directory/   self-hostable public server directory
+  TestClient/  console client for protocol testing
+  Mod/         native SFS game mod
+  docs/        architecture, research, setup and roadmap
 ```
 
-## Quick start (server)
+## Dedicated server
 
 ```bash
 cd Server
-dotnet run -- --port 7777 --name "My SFS Enhanced Server" --worlds ./worlds
+dotnet run -- --port 7777 --name "My SFS Server" --data ./data --max-players 32
 ```
 
-The server is fully functional as a standalone program right now. Open a second terminal
-and drive it with the included test client (no game needed):
+A server can advertise itself through a self-hosted directory:
 
 ```bash
-dotnet run --project TestClient -- 127.0.0.1 7777 Alice
-> world My Test World
-> spawn
-> chat hello from Alice
+dotnet run -- \
+  --port 7777 \
+  --name "My SFS Server" \
+  --data ./data \
+  --max-players 32 \
+  --advertise \
+  --directory https://your-directory.example \
+  --public-host play.example.com \
+  --region EU
 ```
 
-Open a third terminal for a second player and watch them see each other's world list,
-builds, and chat in real time. See `docs/ARCHITECTURE.md` for the full protocol.
+## Server directory
 
-**Note on this sandbox:** I wrote this code carefully but couldn't install a .NET SDK in
-this environment to actually compile-test it (network is restricted here) — treat it as
-"should build cleanly" rather than "verified to build." If `dotnet build` turns up an
-error, it'll be a small one; open an issue against yourself and fix forward.
+```bash
+cd Directory
+dotnet run --urls http://0.0.0.0:8080
+```
 
-## Quick start (mod)
+The directory exposes the public server browser API under `/api/v1/servers`.
 
-1. Build: `dotnet build Mod/SFSEnhanced.Mod.csproj -c Release`
-2. Copy `Mod/bin/Release/net472/SFSEnhanced.dll` (+ `SFSEnhanced.Shared.dll` if not
-   merged) into `Spaceflight Simulator_Data/Mods/SFSEnhanced/`
-3. Launch the game — native ModLoader picks it up. Multiplayer window opens on Home;
-   press **F8** in-world. Run the dedicated server first (`dotnet run --project Server`).
+## Mod
 
-See `docs/SETUP_MOD_SIDE.md` and `agent.md` for details. Decompiled sources are in
-`Assembly-CSharp/` if you need more hooks.
+The mod uses SFS's native `ModLoader.Mod` and `SFS.UI.ModGUI` APIs.
 
-## Where the feature list came from
+Once installed, `MULTIPLAYER` appears as a first-class button on the SFS home screen. The in-game multiplayer UI provides public server discovery, direct connection, hosting, world creation, and world management.
 
-`docs/FEATURE_RESEARCH.md` is a writeup of what the SFS community (Steam forums, Reddit,
-existing mod repos) has actually been asking for, which is what shaped the roadmap below.
+F8 remains available as an in-world shortcut.
+
+## Scope
+
+SFS Enhanced is intentionally larger than multiplayer alone. The roadmap includes missions, events, shared stations, persistent infrastructure, factions, moderation, creator tools, blueprint sharing, custom rulesets, and optional gameplay modules.
+
+See `docs/ROADMAP.md` for the current project direction.
