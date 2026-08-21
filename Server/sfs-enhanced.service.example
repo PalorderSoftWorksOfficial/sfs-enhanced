@@ -1,0 +1,15 @@
+[Unit]
+Description=SFS Enhanced Dedicated Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sfs-enhanced
+ExecStart=/usr/bin/dotnet /opt/sfs-enhanced/Server/bin/Release/net8.0/SFSEnhanced.Server.dll --config /opt/sfs-enhanced/Server/server.json
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
