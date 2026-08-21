@@ -1,0 +1,14 @@
+{
+  "Port": 7777,
+  "ServerName": "FAC SFS Enhanced",
+  "Motd": "Welcome to SFS Enhanced.",
+  "MaxPlayers": 32,
+  "DataDir": "./data",
+  "Advertise": false,
+  "DirectoryUrl": "http://127.0.0.1:8787",
+  "PublicHost": "127.0.0.1",
+  "Region": "eu-central",
+  "GameVersion": "1.5+",
+  "ModVersion": "0.1.0",
+  "PasswordProtected": false
+}
