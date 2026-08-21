@@ -22,25 +22,40 @@ namespace SFSEnhanced.Server.Networking
 
         public async Task RunAsync(NetServer server, CancellationToken ct)
         {
-            if (!_config.Advertise || string.IsNullOrWhiteSpace(_config.DirectoryUrl) || string.IsNullOrWhiteSpace(_config.PublicHost)) return;
-            try
+            if (!_config.Advertise || string.IsNullOrWhiteSpace(_config.DirectoryUrl) || string.IsNullOrWhiteSpace(_config.PublicHost))
+                return;
+
+            while (!ct.IsCancellationRequested)
             {
-                await RegisterAsync().ConfigureAwait(false);
-                while (!ct.IsCancellationRequested)
+                try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(_serverId) || string.IsNullOrWhiteSpace(_heartbeatToken))
+                        await RegisterAsync().ConfigureAwait(false);
+
                     await HeartbeatAsync(server).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[directory] {ex.Message}. Retrying in 10 seconds.");
+                    _serverId = null;
+                    _heartbeatToken = null;
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                 }
             }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[directory] {ex.Message}");
-            }
-            finally
-            {
-                await UnregisterAsync().ConfigureAwait(false);
-            }
+
+            await UnregisterAsync().ConfigureAwait(false);
         }
 
         private async Task RegisterAsync()
@@ -58,14 +73,17 @@ namespace SFSEnhanced.Server.Networking
                 PasswordProtected = _config.PasswordProtected
             };
             var response = await PostAsync<ServerRegisterResponse>("/api/v1/servers/register", request).ConfigureAwait(false);
-            _serverId = response?.ServerId;
-            _heartbeatToken = response?.HeartbeatToken;
+            if (response == null || string.IsNullOrWhiteSpace(response.ServerId) || string.IsNullOrWhiteSpace(response.HeartbeatToken))
+                throw new InvalidOperationException("Directory returned an invalid registration response.");
+
+            _serverId = response.ServerId;
+            _heartbeatToken = response.HeartbeatToken;
+            Console.WriteLine($"[directory] Registered as {_serverId}");
         }
 
         private async Task HeartbeatAsync(NetServer server)
         {
-            if (string.IsNullOrWhiteSpace(_serverId) || string.IsNullOrWhiteSpace(_heartbeatToken)) return;
-            await PostAsync<object>("/api/v1/servers/heartbeat", new ServerHeartbeatRequest
+            var response = await PostAsync<object>("/api/v1/servers/heartbeat", new ServerHeartbeatRequest
             {
                 ServerId = _serverId,
                 HeartbeatToken = _heartbeatToken,
@@ -77,7 +95,9 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task UnregisterAsync()
         {
-            if (string.IsNullOrWhiteSpace(_serverId) || string.IsNullOrWhiteSpace(_heartbeatToken)) return;
+            if (string.IsNullOrWhiteSpace(_serverId) || string.IsNullOrWhiteSpace(_heartbeatToken))
+                return;
+
             try
             {
                 await PostAsync<object>("/api/v1/servers/unregister", new ServerHeartbeatRequest
@@ -88,6 +108,9 @@ namespace SFSEnhanced.Server.Networking
                 }).ConfigureAwait(false);
             }
             catch { }
+
+            _serverId = null;
+            _heartbeatToken = null;
         }
 
         private async Task<T> PostAsync<T>(string path, object payload)
