@@ -6,11 +6,15 @@ on:
     paths:
       - "Server/**"
       - "Shared/**"
+      - "TestClient/**"
+      - "scripts/fac-smoke-test.*"
       - ".github/workflows/server-cross-platform.yml"
   pull_request:
     paths:
       - "Server/**"
       - "Shared/**"
+      - "TestClient/**"
+      - "scripts/fac-smoke-test.*"
       - ".github/workflows/server-cross-platform.yml"
 
 jobs:
@@ -34,6 +38,13 @@ jobs:
         run: dotnet build Server/SFSEnhanced.Server.csproj -c Release --no-restore
       - name: Publish
         run: dotnet publish Server/SFSEnhanced.Server.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/server-${{ matrix.rid }}
+      - name: Smoke test Linux
+        if: runner.os == 'Linux'
+        run: ./scripts/fac-smoke-test.sh
+      - name: Smoke test Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/fac-smoke-test.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: server-${{ matrix.rid }}
