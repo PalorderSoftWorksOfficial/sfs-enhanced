@@ -1,0 +1,40 @@
+name: Server Cross-Platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Server/**"
+      - "Shared/**"
+      - ".github/workflows/server-cross-platform.yml"
+  pull_request:
+    paths:
+      - "Server/**"
+      - "Shared/**"
+      - ".github/workflows/server-cross-platform.yml"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore Server/SFSEnhanced.Server.csproj
+      - name: Build
+        run: dotnet build Server/SFSEnhanced.Server.csproj -c Release --no-restore
+      - name: Publish
+        run: dotnet publish Server/SFSEnhanced.Server.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/server-${{ matrix.rid }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-${{ matrix.rid }}
+          path: artifacts/server-${{ matrix.rid }}

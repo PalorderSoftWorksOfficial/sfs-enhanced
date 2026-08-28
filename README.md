@@ -77,10 +77,43 @@ sfs-enhanced/
 
 ## Dedicated server
 
+The dedicated server is a .NET 8 application and does not load Spaceflight Simulator assemblies. The server is therefore designed to run independently on Windows or Linux while the SFS mod remains the game-side component.
+
+### Windows
+
+From PowerShell:
+
+```powershell
+cd Server
+dotnet run -- --port 7777 --name "My SFS Server" --data ./data --max-players 32
+```
+
+For a self-contained Windows server build:
+
+```powershell
+./scripts/build-server.ps1
+```
+
+The resulting server is placed under `dist/server/win-x64`.
+
+### Linux
+
+From Bash:
+
 ```bash
 cd Server
 dotnet run -- --port 7777 --name "My SFS Server" --data ./data --max-players 32
 ```
+
+For a self-contained Linux server build:
+
+```bash
+./scripts/build-server.sh
+```
+
+The resulting server is placed under `dist/server/linux-x64`.
+
+The server's persistence and networking code uses .NET cross-platform APIs rather than Windows-specific APIs. Linux deployments can use the included `Server/sfs-enhanced.service.example` as a systemd template, while Windows deployments can run `Server/run-server.ps1` or the published executable directly.
 
 A server can advertise itself through a self-hosted directory:
 
@@ -118,3 +151,36 @@ F8 remains available as an in-world shortcut.
 SFS Enhanced is intentionally larger than multiplayer alone. The roadmap includes missions, events, shared stations, persistent infrastructure, factions, moderation, creator tools, blueprint sharing, custom rulesets, and optional gameplay modules.
 
 See `docs/ROADMAP.md` for the current project direction.
+
+## Dedicated server platform support
+
+The dedicated server is a standalone .NET 8 application and does not load the
+SFS executable, Unity, or Unity native libraries. SFS itself and the game-side
+mod remain platform-dependent; the dedicated server is intentionally separate.
+
+The same server binary architecture supports both Windows and Linux. For a
+portable deployment, install the .NET 8 runtime and run `Server/SFSEnhanced.Server.csproj`.
+For servers without a runtime, publish a self-contained build:
+
+### Linux
+
+```bash
+bash scripts/publish-server.sh
+./scripts/run-server.sh ./Server/server.json
+```
+
+The Linux publisher targets `linux-x64`.
+
+### Windows PowerShell
+
+```powershell
+.\scripts\publish-server.ps1
+.\scripts\run-server.ps1 .\Server\server.json
+```
+
+The Windows publisher targets `win-x64` and produces `SFSEnhanced.Server.exe`.
+
+Both platforms use the same JSON configuration, TCP protocol, persistence
+format, directory service integration, and world data. Server data should be
+kept outside the game installation so a Linux or Windows host can be migrated
+without installing SFS on the host.

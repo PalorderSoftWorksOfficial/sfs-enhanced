@@ -80,3 +80,29 @@ depends on exactly how SFS implements warp internally.
 - **SQLite instead of JSON files:** swap `Server/Persistence/FileStore.cs`'s
   internals; `AccountService`/`WorldManager` only call `Save`/`Load`/`ListIds`,
   so nothing above that layer needs to change.
+
+## Dedicated server platform boundary
+
+The dedicated server is deliberately independent of the SFS executable. It is
+implemented against .NET 8, System.Net, System.IO, and the shared protocol.
+There are no UnityEngine or Assembly-CSharp references in the Server project.
+
+This means the server can run on Windows or Linux even though the SFS client
+and `Mod/` project depend on the Windows SFS/Unity assemblies used by the game.
+The game client connects over the same TCP protocol regardless of the host OS.
+
+The supported deployment targets are:
+
+- Windows x64 (`win-x64`)
+- Linux x64 (`linux-x64`)
+
+The publishing scripts produce self-contained single-file server deployments so
+hosts do not need to install .NET separately. Framework-dependent `dotnet run`
+and `dotnet publish` remain supported for administrators who already manage a
+.NET runtime.
+
+All persistent paths use `System.IO.Path` rather than OS-specific separators.
+The server does not assume an SFS installation directory, Windows registry,
+Windows services, or Linux-specific APIs. Linux service management is supplied
+through systemd, while Windows hosts can run the same executable directly or
+wrap it in their normal Windows service tooling.
