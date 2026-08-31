@@ -100,6 +100,8 @@ namespace SFSEnhanced.Server.Networking
                         case PacketType.Ping:
                             await conn.SendAsync(PacketType.Pong, null);
                             break;
+                        case PacketType.Disconnect:
+                            return;
                         case PacketType.ServerInfoRequest:
                             await conn.SendAsync(PacketType.ServerInfoResponse, new ServerInfoResponsePacket
                             {
@@ -240,7 +242,7 @@ namespace SFSEnhanced.Server.Networking
                 }
                 var created = _accounts.CreateAccount(hello.PlayerName);
                 account = created.account;
-                issuedToken = created.token;
+                issuedToken = created.plainToken;
             }
 
             if (_connections.TryGetValue(account.PlayerId, out var oldConnection) && !ReferenceEquals(oldConnection, conn))

@@ -51,6 +51,7 @@ namespace SFSEnhanced.TestClient
                 switch (parts[0])
                 {
                     case "quit":
+                        await NetMessage.WriteAsync(stream, PacketType.Disconnect, new DisconnectPacket { Reason = "Client requested disconnect" });
                         return;
 
                     case "world":

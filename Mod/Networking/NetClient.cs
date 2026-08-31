@@ -159,7 +159,7 @@ namespace SFSEnhanced.Mod.Networking
                 while (!ct.IsCancellationRequested)
                 {
                     var (type, json) = await NetMessage.ReadRawAsync(stream);
-                    if (json == null) break;
+                    if (json == null || generation != Volatile.Read(ref _connectionGeneration)) break;
                     _incoming.Enqueue((type, json));
                 }
             }
