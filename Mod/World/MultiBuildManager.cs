@@ -45,6 +45,18 @@ namespace SFSEnhanced.Mod.World
 
         private void HandlePacket(PacketType type, string json)
         {
+            try
+            {
+                HandlePacketInternal(type, json);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SFSEnhanced] Build packet handling failed ({type}): {e}");
+            }
+        }
+
+        private void HandlePacketInternal(PacketType type, string json)
+        {
             switch (type)
             {
                 case PacketType.WorldJoinAck:

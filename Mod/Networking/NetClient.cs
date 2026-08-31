@@ -13,11 +13,13 @@ namespace SFSEnhanced.Mod.Networking
         private NetworkStream _stream;
         private CancellationTokenSource _cts;
         private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
+        private int _connectionGeneration;
+        private volatile bool _connected;
 
         public string PlayerId { get; private set; }
         public string AuthToken { get; private set; }
         public string CurrentWorldId { get; private set; }
-        public bool IsConnected => _tcp?.Connected == true;
+        public bool IsConnected => _connected;
 
         private readonly ConcurrentQueue<(PacketType type, string json)> _incoming = new ConcurrentQueue<(PacketType type, string json)>();
 
@@ -34,10 +36,15 @@ namespace SFSEnhanced.Mod.Networking
 
             try
             {
-                _tcp = new TcpClient();
-                await _tcp.ConnectAsync(host, port);
-                _stream = _tcp.GetStream();
-                _cts = new CancellationTokenSource();
+                var generation = Interlocked.Increment(ref _connectionGeneration);
+                var tcp = new TcpClient();
+                await tcp.ConnectAsync(host, port);
+                var stream = tcp.GetStream();
+                var cts = new CancellationTokenSource();
+                _tcp = tcp;
+                _stream = stream;
+                _cts = cts;
+                _connected = true;
 
                 await SendAsync(PacketType.Hello, new HelloPacket
                 {
@@ -46,7 +53,7 @@ namespace SFSEnhanced.Mod.Networking
                     ClientModVersion = "0.1.0",
                 });
 
-                _ = ReadLoopAsync(_cts.Token);
+                _ = ReadLoopAsync(stream, cts.Token, generation);
                 return true;
             }
             catch (Exception e)
@@ -59,21 +66,32 @@ namespace SFSEnhanced.Mod.Networking
 
         public void Disconnect()
         {
+            Interlocked.Increment(ref _connectionGeneration);
+            _connected = false;
             CurrentWorldId = null;
             _cts?.Cancel();
             try { _stream?.Dispose(); } catch { }
             try { _tcp?.Close(); } catch { }
             _stream = null;
             _tcp = null;
+            _cts = null;
+            while (_incoming.TryDequeue(out _)) { }
         }
 
         public async Task SendAsync(PacketType type, object payload)
         {
-            if (_stream == null || !IsConnected) return;
+            var stream = _stream;
+            if (stream == null || !IsConnected) return;
             await _writeLock.WaitAsync();
             try
             {
-                await NetMessage.WriteAsync(_stream, type, payload);
+                if (!IsConnected || !ReferenceEquals(stream, _stream)) return;
+                await NetMessage.WriteAsync(stream, type, payload);
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning($"[SFSEnhanced] Send failed ({type}): {e.Message}");
+                Disconnect();
             }
             finally
             {
@@ -85,9 +103,33 @@ namespace SFSEnhanced.Mod.Networking
         {
             while (_incoming.TryDequeue(out var item))
             {
-                if (item.type == PacketType.HelloAck)
+                try
                 {
-                    var ack = Newtonsoft.Json.JsonConvert.DeserializeObject<HelloAckPacket>(item.json);
+                    HandlePacket(item.type, item.json);
+                }
+                catch (Exception e)
+                {
+                    UnityEngine.Debug.LogError($"[SFSEnhanced] Packet handling failed ({item.type}): {e}");
+                }
+
+                try
+                {
+                    OnPacket?.Invoke(item.type, item.json);
+                }
+                catch (Exception e)
+                {
+                    UnityEngine.Debug.LogError($"[SFSEnhanced] Packet listener failed ({item.type}): {e}");
+                }
+            }
+        }
+
+        private void HandlePacket(PacketType type, string json)
+        {
+            switch (type)
+            {
+                case PacketType.HelloAck:
+                    var ack = Newtonsoft.Json.JsonConvert.DeserializeObject<HelloAckPacket>(json);
+                    if (ack == null) throw new InvalidOperationException("Missing HelloAck payload.");
                     if (ack.Accepted)
                     {
                         PlayerId = ack.PlayerId;
@@ -101,25 +143,22 @@ namespace SFSEnhanced.Mod.Networking
                     {
                         UnityEngine.Debug.LogError($"[SFSEnhanced] Login rejected: {ack.RejectReason}");
                     }
-                }
-                else if (item.type == PacketType.WorldJoinAck)
-                {
-                    var ack = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(item.json);
-                    if (ack.Accepted)
-                        CurrentWorldId = ack.WorldId;
-                }
-
-                OnPacket?.Invoke(item.type, item.json);
+                    break;
+                case PacketType.WorldJoinAck:
+                    var worldAck = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(json);
+                    if (worldAck == null) throw new InvalidOperationException("Missing WorldJoinAck payload.");
+                    if (worldAck.Accepted) CurrentWorldId = worldAck.WorldId;
+                    break;
             }
         }
 
-        private async Task ReadLoopAsync(CancellationToken ct)
+        private async Task ReadLoopAsync(NetworkStream stream, CancellationToken ct, int generation)
         {
             try
             {
-                while (!ct.IsCancellationRequested && _stream != null)
+                while (!ct.IsCancellationRequested)
                 {
-                    var (type, json) = await NetMessage.ReadRawAsync(_stream);
+                    var (type, json) = await NetMessage.ReadRawAsync(stream);
                     if (json == null) break;
                     _incoming.Enqueue((type, json));
                 }
@@ -131,10 +170,14 @@ namespace SFSEnhanced.Mod.Networking
             }
             finally
             {
-                if (!ct.IsCancellationRequested)
+                if (!ct.IsCancellationRequested && generation == Volatile.Read(ref _connectionGeneration))
                 {
+                    _connected = false;
                     CurrentWorldId = null;
+                    try { stream.Dispose(); } catch { }
                     try { _tcp?.Close(); } catch { }
+                    _stream = null;
+                    _tcp = null;
                 }
             }
         }

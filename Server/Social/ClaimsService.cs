@@ -21,7 +21,12 @@ namespace SFSEnhanced.Server.Social
         public ClaimInfo Create(string worldId, string ownerPlayerId, string ownerPlayerName, ClaimCreatePacket req)
         {
             var world = _worlds.Get(worldId);
-            if (world == null) return null;
+            if (world == null || req == null) return null;
+            if (req.Shape == ClaimShape.Build)
+            {
+                var existing = world.Claims.FirstOrDefault(c => c.Shape == ClaimShape.Build && c.BuildId == req.BuildId);
+                if (existing != null) return existing;
+            }
 
             var claim = new ClaimInfo
             {
@@ -37,6 +42,16 @@ namespace SFSEnhanced.Server.Social
             world.Claims.Add(claim);
             _worlds.Persist(worldId);
             return claim;
+        }
+
+        public bool RemoveForBuild(string worldId, string buildId, string requestingPlayerId)
+        {
+            var world = _worlds.Get(worldId);
+            var claims = world?.Claims.Where(c => c.Shape == ClaimShape.Build && c.BuildId == buildId && c.OwnerPlayerId == requestingPlayerId).ToList();
+            if (claims == null || claims.Count == 0) return false;
+            foreach (var claim in claims) world.Claims.Remove(claim);
+            _worlds.Persist(worldId);
+            return true;
         }
 
         public bool Remove(string worldId, string claimId, string requestingPlayerId)

@@ -25,6 +25,7 @@ namespace SFSEnhanced.Mod.UI
         private string _playerName = "Pilot";
         private string _worldName = "Shared World";
         private string _serverDirectoryUrl;
+        private GameObject _serverResultsHolder;
 
         public MultiplayerMenu(ModMain mod)
         {
@@ -59,6 +60,7 @@ namespace SFSEnhanced.Mod.UI
         {
             if (_visible) return;
             _visible = true;
+            ClearServerResults();
             ModSettings.PlayerName = _playerName;
             ModSettings.Host = _host;
             if (int.TryParse(_port, out var savedPort)) ModSettings.Port = savedPort;
@@ -165,12 +167,14 @@ namespace SFSEnhanced.Mod.UI
             SetStatus("Loading public servers...");
             var servers = await _directory.ListAsync(_serverDirectoryUrl);
             if (!_visible || _window == null) return;
+            ClearServerResults();
+            _serverResultsHolder = Builder.CreateHolder(root, "SFSEnhanced_ServerResults");
             for (int i = 0; i < servers.Count && i < 6; i++)
             {
                 var server = servers[i];
                 int y = -80 - (i * 54);
                 string text = $"{server.Name}  {server.OnlinePlayers}/{server.MaxPlayers}  {server.Region}";
-                Builder.CreateButton(root, 420, 44, 0, y, () => JoinServer(server), text);
+                Builder.CreateButton(_serverResultsHolder.transform, 420, 44, 0, y, () => JoinServer(server), text);
             }
             SetStatus(servers.Count == 0 ? "No public servers found." : $"Found {servers.Count} public server(s).");
         }
@@ -193,7 +197,15 @@ namespace SFSEnhanced.Mod.UI
                 _holder = null;
                 _window = null;
                 _status = null;
+                _serverResultsHolder = null;
             }
+        }
+
+        private void ClearServerResults()
+        {
+            if (_serverResultsHolder == null) return;
+            UnityEngine.Object.Destroy(_serverResultsHolder);
+            _serverResultsHolder = null;
         }
 
         private void HideHomeButton()
