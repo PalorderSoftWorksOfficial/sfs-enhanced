@@ -81,7 +81,7 @@ namespace SFSEnhanced.Mod.UI
                     SetStatus("Connect to a server first.");
                     return;
                 }
-                _mod.Client.SendAsync(PacketType.WorldListRequest, new { });
+                _ = _mod.Client.SendAsync(PacketType.WorldListRequest, new { });
                 SetStatus("Loading worlds...");
             }, "MY WORLDS");
 
@@ -112,7 +112,7 @@ namespace SFSEnhanced.Mod.UI
                     SetStatus("Connect to a server first.");
                     return;
                 }
-                _mod.Client.SendAsync(PacketType.WorldCreate, new WorldCreatePacket { Name = _worldName, IsPublic = true });
+                _ = _mod.Client.SendAsync(PacketType.WorldCreate, new WorldCreatePacket { Name = _worldName, IsPublic = true });
                 SetStatus("Creating world...");
             }, "CREATE WORLD");
             Builder.CreateButton(root, 130, 38, 155, -490, () =>
@@ -168,7 +168,8 @@ namespace SFSEnhanced.Mod.UI
             var servers = await _directory.ListAsync(_serverDirectoryUrl);
             if (!_visible || _window == null) return;
             ClearServerResults();
-            _serverResultsHolder = Builder.CreateHolder(root, "SFSEnhanced_ServerResults");
+            _serverResultsHolder = new GameObject("SFSEnhanced_ServerResults");
+            _serverResultsHolder.transform.SetParent(root, false);
             for (int i = 0; i < servers.Count && i < 6; i++)
             {
                 var server = servers[i];
