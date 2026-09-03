@@ -1,0 +1,37 @@
+name: Mod Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Mod/**"
+      - "Shared/**"
+      - "Assembly-CSharp/**"
+      - "Dependencies/**"
+      - "nuget.config"
+      - ".github/workflows/mod-build.yml"
+  pull_request:
+    paths:
+      - "Mod/**"
+      - "Shared/**"
+      - "Assembly-CSharp/**"
+      - "Dependencies/**"
+      - "nuget.config"
+      - ".github/workflows/mod-build.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore Mod/SFSEnhanced.Mod.csproj --configfile nuget.config
+      - name: Build
+        run: dotnet build Mod/SFSEnhanced.Mod.csproj -c Release --no-restore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sfs-enhanced-mod
+          path: Mod/bin/Release/net472/SFSEnhanced.dll

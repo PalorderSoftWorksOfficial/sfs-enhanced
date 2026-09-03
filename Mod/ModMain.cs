@@ -73,6 +73,7 @@ namespace SFSEnhanced.Mod
         {
             if (_mod == null) return;
             _mod.Client?.PumpIncoming();
+            _mod.Menu?.EnsureHomeButton();
             _mod.Builds?.TickInterpolation(Time.deltaTime);
             _mod.Builds?.TickLocalPublish(Time.deltaTime);
             if (Input.GetKeyDown(KeyCode.F8)) _mod.Menu?.Toggle();

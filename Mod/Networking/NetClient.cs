@@ -78,6 +78,13 @@ namespace SFSEnhanced.Mod.Networking
             while (_incoming.TryDequeue(out _)) { }
         }
 
+        public async Task LeaveWorldAsync()
+        {
+            if (!string.IsNullOrEmpty(CurrentWorldId) && IsConnected)
+                await SendAsync(PacketType.WorldLeave, new { });
+            CurrentWorldId = null;
+        }
+
         public async Task SendAsync(PacketType type, object payload)
         {
             var stream = _stream;
@@ -142,6 +149,7 @@ namespace SFSEnhanced.Mod.Networking
                     else
                     {
                         UnityEngine.Debug.LogError($"[SFSEnhanced] Login rejected: {ack.RejectReason}");
+                        Disconnect();
                     }
                     break;
                 case PacketType.WorldJoinAck:

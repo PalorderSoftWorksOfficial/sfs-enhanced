@@ -67,6 +67,7 @@ namespace SFSEnhanced.Server.Social
 
         public FriendListResponsePacket BuildFriendList(PlayerAccount account)
         {
+            account = _accounts.FindById(account.PlayerId) ?? account;
             FriendInfo ToInfo(string id)
             {
                 var acc = _accounts.FindById(id);

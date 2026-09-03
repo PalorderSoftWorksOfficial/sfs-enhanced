@@ -12,7 +12,29 @@ try {
     $ServerLog = Join-Path $DataDir "server.log"
     $ServerErrorLog = Join-Path $DataDir "server-error.log"
     $ServerProcess = Start-Process dotnet -ArgumentList @("run", "--project", "Server\SFSEnhanced.Server.csproj", "--", "--port", $Port, "--data", $DataDir, "--name", "FAC Smoke Server") -RedirectStandardOutput $ServerLog -RedirectStandardError $ServerErrorLog -PassThru
-    Start-Sleep -Seconds 2
+    $Ready = $false
+    for ($i = 0; $i -lt 100; $i++) {
+        if ($ServerProcess.HasExited) {
+            Get-Content $ServerLog -ErrorAction SilentlyContinue
+            Get-Content $ServerErrorLog -ErrorAction SilentlyContinue
+            throw "Server exited before becoming ready."
+        }
+        try {
+            $Socket = New-Object System.Net.Sockets.TcpClient
+            $Socket.Connect("127.0.0.1", $Port)
+            $Socket.Dispose()
+            $Ready = $true
+            break
+        }
+        catch {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if (-not $Ready) {
+        Get-Content $ServerLog -ErrorAction SilentlyContinue
+        Get-Content $ServerErrorLog -ErrorAction SilentlyContinue
+        throw "Server did not become ready within 10 seconds."
+    }
     "world FAC Smoke World`nchat FAC smoke test`nquit" | dotnet run --project TestClient\SFSEnhanced.TestClient.csproj -- 127.0.0.1 $Port FAC-Smoke
     if (-not (Select-String -Path $ServerLog -Pattern "FAC Smoke Server" -Quiet)) {
         Get-Content $ServerLog

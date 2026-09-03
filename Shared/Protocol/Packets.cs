@@ -234,6 +234,12 @@ namespace SFSEnhanced.Shared.Protocol
         public double RadiusMeters;
     }
 
+    public class ClaimRemovePacket
+    {
+        public string WorldId;
+        public string ClaimId;
+    }
+
     public class ClaimDeniedPacket
     {
         public string ClaimId;

@@ -167,7 +167,7 @@ namespace SFSEnhanced.Server.Networking
                             await HandleClaimCreate(conn, Deserialize<ClaimCreatePacket>(json));
                             break;
                         case PacketType.ClaimRemove:
-                            await HandleClaimRemove(conn, Deserialize<ClaimCreatePacket>(json));
+                            await HandleClaimRemove(conn, Deserialize<ClaimRemovePacket>(json));
                             break;
                         case PacketType.ChatMessage:
                             await HandleChat(conn, Deserialize<ChatMessagePacket>(json));
@@ -491,10 +491,10 @@ namespace SFSEnhanced.Server.Networking
             if (claim != null) await BroadcastToWorld(req.WorldId, PacketType.ClaimCreate, claim, null);
         }
 
-        private async Task HandleClaimRemove(ClientConnection conn, ClaimCreatePacket req)
+        private async Task HandleClaimRemove(ClientConnection conn, ClaimRemovePacket req)
         {
-            if (req == null || req.WorldId != conn.CurrentWorldId) return;
-            if (_claims.Remove(req.WorldId, req.BuildId, conn.Account.PlayerId)) await BroadcastToWorld(req.WorldId, PacketType.ClaimRemove, req, null);
+            if (req == null || req.WorldId != conn.CurrentWorldId || string.IsNullOrEmpty(req.ClaimId)) return;
+            if (_claims.Remove(req.WorldId, req.ClaimId, conn.Account.PlayerId)) await BroadcastToWorld(req.WorldId, PacketType.ClaimRemove, req, null);
         }
 
         private async Task HandleChat(ClientConnection conn, ChatMessagePacket msg)

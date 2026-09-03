@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
+    <AutomaticallyUseReferenceAssemblyPackages>true</AutomaticallyUseReferenceAssemblyPackages>
     <LangVersion>9.0</LangVersion>
     <Nullable>disable</Nullable>
     <RootNamespace>SFSEnhanced.Mod</RootNamespace>
@@ -11,6 +12,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Shared\SFSEnhanced.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net472" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 
   <!--

@@ -8,6 +8,7 @@ on:
       - "Shared/**"
       - "TestClient/**"
       - "scripts/fac-smoke-test.*"
+      - "scripts/multiplayer-integration/**"
       - ".github/workflows/server-cross-platform.yml"
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "Shared/**"
       - "TestClient/**"
       - "scripts/fac-smoke-test.*"
+      - "scripts/multiplayer-integration/**"
       - ".github/workflows/server-cross-platform.yml"
 
 jobs:
@@ -45,6 +47,25 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/fac-smoke-test.ps1
+      - name: Multiplayer integration Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          dotnet restore scripts/multiplayer-integration/MultiplayerIntegration.csproj
+          dotnet build scripts/multiplayer-integration/MultiplayerIntegration.csproj -c Release --no-restore
+          dotnet run --project Server/SFSEnhanced.Server.csproj -c Release --no-build -- --port 18777 --data "$RUNNER_TEMP/sfs-enhanced-integration" --name "Integration Server" > "$RUNNER_TEMP/sfs-enhanced-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in {1..100}; do
+            if (echo > /dev/tcp/127.0.0.1/18777) 2>/dev/null; then break; fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              cat "$RUNNER_TEMP/sfs-enhanced-server.log"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          dotnet run --project scripts/multiplayer-integration/MultiplayerIntegration.csproj -c Release --no-build
       - uses: actions/upload-artifact@v4
         with:
           name: server-${{ matrix.rid }}
