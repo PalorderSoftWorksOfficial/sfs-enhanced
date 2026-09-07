@@ -6,7 +6,6 @@ on:
     paths:
       - "Mod/**"
       - "Shared/**"
-      - "Assembly-CSharp/**"
       - "Dependencies/**"
       - "nuget.config"
       - ".github/workflows/mod-build.yml"
@@ -14,7 +13,6 @@ on:
     paths:
       - "Mod/**"
       - "Shared/**"
-      - "Assembly-CSharp/**"
       - "Dependencies/**"
       - "nuget.config"
       - ".github/workflows/mod-build.yml"
@@ -31,7 +29,12 @@ jobs:
         run: dotnet restore Mod/SFSEnhanced.Mod.csproj --configfile nuget.config
       - name: Build
         run: dotnet build Mod/SFSEnhanced.Mod.csproj -c Release --no-restore
+      - name: Package
+        run: |
+          mkdir -p dist/SFSEnhanced
+          cp Mod/bin/Release/net472/SFSEnhanced.dll dist/SFSEnhanced/SFSEnhanced.dll
+          cp Mod/bin/Release/net472/mod.json dist/SFSEnhanced/mod.json
       - uses: actions/upload-artifact@v4
         with:
           name: sfs-enhanced-mod
-          path: Mod/bin/Release/net472/SFSEnhanced.dll
+          path: dist/SFSEnhanced
