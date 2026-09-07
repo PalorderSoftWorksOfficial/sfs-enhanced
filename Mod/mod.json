@@ -1,9 +1,9 @@
 {
   "id": "sfs-enhanced",
   "name": "SFS Enhanced",
-  "version": "0.1.0",
-  "author": "SFS Enhanced",
-  "description": "Dedicated-server multiplayer, shared worlds, multi-build sync, friends & claims for Spaceflight Simulator.",
+  "version": "0.1.1",
+  "author": "PalorderSoftWorksOfficial",
+  "description": "Multiplayer menu and client for SFS Enhanced servers.",
   "assembly": "SFSEnhanced.dll",
   "dependencies": []
 }
