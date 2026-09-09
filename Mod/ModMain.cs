@@ -24,6 +24,7 @@ namespace SFSEnhanced.Mod
         public static ModMain Instance { get; private set; }
         public NetClient Client { get; private set; }
         public MultiBuildManager Builds { get; private set; }
+        public LocalRocketFleetSync RocketFleet { get; private set; }
         public FriendsUI Friends { get; private set; }
         public MultiplayerMenu Menu { get; private set; }
 
@@ -34,6 +35,7 @@ namespace SFSEnhanced.Mod
             Instance = this;
             Client = new NetClient();
             Builds = new MultiBuildManager(Client);
+            RocketFleet = new LocalRocketFleetSync(Client);
             Friends = new FriendsUI(Client);
             Menu = new MultiplayerMenu(this);
             PackageManager.Initialize(ModFolder.ToString());
@@ -75,6 +77,7 @@ namespace SFSEnhanced.Mod
             _mod.Menu?.EnsurePlayButton();
             _mod.Builds?.TickInterpolation(Time.deltaTime);
             _mod.Builds?.TickLocalPublish(Time.deltaTime);
+            _mod.RocketFleet?.Tick(Time.deltaTime);
             if (Input.GetKeyDown(KeyCode.F8)) _mod.Menu?.Toggle();
         }
     }

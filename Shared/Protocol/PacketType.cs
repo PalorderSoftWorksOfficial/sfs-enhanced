@@ -37,10 +37,18 @@ namespace SFSEnhanced.Shared.Protocol
         BuildControlRequest = 34, // "let me pilot this" — server arbitrates conflicts
         BuildControlGrant = 35,
         WorldTimeState = 36,
+        PlayerConnected = 37,
+        PlayerDisconnected = 38,
+        RocketPrimaryState = 39,
 
         // --- Time control ---
         TimeWarpRequest = 40,   // client asking to warp; server may deny if others are nearby
-        TimeWarpState = 41,     // server broadcasting authoritative warp state
+        TimeWarpState = 41,
+        RocketSecondaryState = 42,
+        PartModuleState = 43,
+        TimeWarpVote = 44,
+        TimeWarpVoteResponse = 45,
+        TimeWarpResult = 46,     // server broadcasting authoritative warp state
 
         // --- Social ---
         FriendRequest = 50,

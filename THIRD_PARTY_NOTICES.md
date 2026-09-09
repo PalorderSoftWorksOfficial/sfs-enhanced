@@ -65,3 +65,6 @@ Repository: https://github.com/105-Code/MorePartsMod
 License: Apache-2.0.
 
 MorePartsMod is an example of the type of SFS mod package that SFS Enhanced's package installer is designed to consume. Its code is not bundled into SFS Enhanced.
+
+SFSPlayer-sys/Spaceflight-Simulator-MultiplayerMod
+The archived multiplayer project is GPL-3.0. SFS Enhanced uses its stable multiplayer architecture and packet/lifecycle concepts as a reference and adapts compatible portions under the project GPL-3.0 licensing.

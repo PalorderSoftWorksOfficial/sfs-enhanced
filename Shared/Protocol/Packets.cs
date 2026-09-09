@@ -156,6 +156,48 @@ namespace SFSEnhanced.Shared.Protocol
         public long Tick;
     }
 
+    public class PlayerPresencePacket
+    {
+        public string PlayerId;
+        public string PlayerName;
+        public string WorldId;
+        public bool Online;
+    }
+
+    public class RocketPrimaryStatePacket
+    {
+        public string WorldId;
+        public string BuildId;
+        public double PosX, PosY;
+        public double VelX, VelY;
+        public double RotationDegrees;
+        public double AngularVelocity;
+        public string PlanetAddress;
+        public double WorldTime;
+        public long Tick;
+    }
+
+    public class RocketSecondaryStatePacket
+    {
+        public string WorldId;
+        public string BuildId;
+        public double? ThrottlePercent;
+        public int? StagingIndex;
+        public bool RcsEnabled;
+        public bool EnginesEnabled;
+        public long Tick;
+    }
+
+    public class PartModuleStatePacket
+    {
+        public string WorldId;
+        public string BuildId;
+        public string PartId;
+        public string ModuleType;
+        public bool Enabled;
+        public double Value;
+        public long Tick;
+    }
     public class BuildControlGrantPacket
     {
         public string BuildId;
@@ -172,6 +214,30 @@ namespace SFSEnhanced.Shared.Protocol
         public double RequestedMultiplier;
     }
 
+    public class TimeWarpVotePacket
+    {
+        public string WorldId;
+        public string RequesterPlayerId;
+        public string RequesterPlayerName;
+        public int VoteId;
+        public double RequestedMultiplier;
+    }
+
+    public class TimeWarpVoteResponsePacket
+    {
+        public string WorldId;
+        public int VoteId;
+        public bool Approved;
+    }
+
+    public class TimeWarpResultPacket
+    {
+        public string WorldId;
+        public int VoteId;
+        public bool Approved;
+        public double ActualMultiplier;
+        public string Reason;
+    }
     public class TimeWarpStatePacket
     {
         public string WorldId;

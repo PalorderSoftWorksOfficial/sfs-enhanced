@@ -93,6 +93,17 @@ namespace SFSEnhanced.Mod.World
                     var removed = Newtonsoft.Json.JsonConvert.DeserializeObject<BuildSnapshot>(json);
                     if (removed != null) RemoveBuild(removed.BuildId);
                     break;
+                case PacketType.RocketPrimaryState:
+                    ApplyRocketPrimary(Newtonsoft.Json.JsonConvert.DeserializeObject<RocketPrimaryStatePacket>(json));
+                    break;
+                case PacketType.RocketSecondaryState:
+                    ApplyRocketSecondary(Newtonsoft.Json.JsonConvert.DeserializeObject<RocketSecondaryStatePacket>(json));
+                    break;
+                case PacketType.PartModuleState:
+                    break;
+                case PacketType.PlayerConnected:
+                case PacketType.PlayerDisconnected:
+                    break;
                 case PacketType.BuildControlGrant:
                     var grant = Newtonsoft.Json.JsonConvert.DeserializeObject<BuildControlGrantPacket>(json);
                     if (grant != null && grant.Granted && grant.ControllingPlayerId == _client.PlayerId) RequestLocalRefresh();
@@ -114,7 +125,7 @@ namespace SFSEnhanced.Mod.World
                 existing.TargetVel = new Double2(snapshot.VelX, snapshot.VelY);
                 existing.TargetRotation = (float)snapshot.RotationDegrees;
                 existing.TargetAngularVelocity = (float)snapshot.AngularVelocity;
-                existing.TargetThrottle = snapshot.ControllingPlayerId;
+                existing.TargetThrottlePercent = null;
                 existing.PendingJson = string.IsNullOrEmpty(snapshot.PartsBlueprintJson) ? existing.PendingJson : snapshot.PartsBlueprintJson;
                 if (existing.Rocket == null && !string.IsNullOrEmpty(existing.PendingJson)) TrySpawnRocket(existing, existing.PendingJson);
                 return;
@@ -154,6 +165,22 @@ namespace SFSEnhanced.Mod.World
             ApplyTransform(remote, true, 1f);
         }
 
+        private void ApplyRocketPrimary(RocketPrimaryStatePacket state)
+        {
+            if (state == null || state.WorldId != _client.CurrentWorldId || state.BuildId == _localBuildId) return;
+            if (!_remoteBuilds.TryGetValue(state.BuildId, out var remote)) return;
+            remote.TargetPos = new Double2(state.PosX, state.PosY);
+            remote.TargetVel = new Double2(state.VelX, state.VelY);
+            remote.TargetRotation = (float)state.RotationDegrees;
+            remote.TargetAngularVelocity = (float)state.AngularVelocity;
+            if (state.WorldTime > 0) _serverWorldTime = Math.Max(_serverWorldTime, state.WorldTime);
+        }
+
+        private void ApplyRocketSecondary(RocketSecondaryStatePacket state)
+        {
+            if (state == null || state.WorldId != _client.CurrentWorldId || !_remoteBuilds.TryGetValue(state.BuildId, out var remote)) return;
+            remote.TargetThrottlePercent = state.ThrottlePercent;
+        }
         private void ApplyStateUpdate(BuildStateUpdatePacket update)
         {
             if (update == null || update.BuildId == _localBuildId) return;
@@ -234,7 +261,10 @@ namespace SFSEnhanced.Mod.World
                 WorldTime = WorldTime.main != null ? WorldTime.main.worldTime : 0,
                 Tick = ++_tick
             });
+            PublishLocalState(new BuildStateUpdatePacket { WorldId = _client.CurrentWorldId, BuildId = _localBuildId, PosX = loc.position.x, PosY = loc.position.y, VelX = loc.velocity.x, VelY = loc.velocity.y, RotationDegrees = local.rb2d.transform.eulerAngles.z, AngularVelocity = local.rb2d.angularVelocity, PlanetAddress = loc.planet?.codeName, ThrottlePercent = local.throttle.throttlePercent.Value, WorldTime = WorldTime.main != null ? WorldTime.main.worldTime : 0, Tick = _tick });
             if (_tick == 1 || _tick % 15 == 0) PublishLocalBuild(SnapshotFromRocket(local, _localBuildId, _client.PlayerId));
+            PublishRocketPrimary(local, loc);
+            PublishRocketSecondary(local);
         }
 
         private void ApplyTransform(RemoteBuild remote, bool immediate, float deltaTime)
@@ -250,6 +280,34 @@ namespace SFSEnhanced.Mod.World
             rocket.rb2d.angularVelocity = remote.TargetAngularVelocity;
         }
 
+        private async void PublishRocketPrimary(Rocket rocket, Location loc)
+        {
+            await _client.SendAsync(PacketType.RocketPrimaryState, new RocketPrimaryStatePacket
+            {
+                WorldId = _client.CurrentWorldId,
+                BuildId = _localBuildId,
+                PosX = loc.position.x,
+                PosY = loc.position.y,
+                VelX = loc.velocity.x,
+                VelY = loc.velocity.y,
+                RotationDegrees = rocket.rb2d.transform.eulerAngles.z,
+                AngularVelocity = rocket.rb2d.angularVelocity,
+                PlanetAddress = loc.planet?.codeName,
+                WorldTime = WorldTime.main != null ? WorldTime.main.worldTime : 0,
+                Tick = _tick
+            });
+        }
+
+        private async void PublishRocketSecondary(Rocket rocket)
+        {
+            await _client.SendAsync(PacketType.RocketSecondaryState, new RocketSecondaryStatePacket
+            {
+                WorldId = _client.CurrentWorldId,
+                BuildId = _localBuildId,
+                ThrottlePercent = rocket.throttle.throttlePercent.Value,
+                Tick = _tick
+            });
+        }
         private async void PublishLocalBuild(BuildSnapshot snapshot)
         {
             await _client.SendAsync(PacketType.BuildSpawn, snapshot);
@@ -297,7 +355,7 @@ namespace SFSEnhanced.Mod.World
             public Double2 TargetVel;
             public float TargetRotation;
             public float TargetAngularVelocity;
-            public string TargetThrottle;
+            public double? TargetThrottlePercent;
             public Rocket Rocket;
             public string PendingJson;
         }

@@ -46,6 +46,7 @@ namespace SFSEnhanced.Mod.UI
         private string _friendTarget = "";
         private string _chatMessage = "";
         private readonly List<string> _chatLog = new List<string>();
+        private GameObject _timeWarpVoteHolder;
 
         public MultiplayerMenu(ModMain mod)
         {
@@ -200,7 +201,10 @@ namespace SFSEnhanced.Mod.UI
                 Builder.CreateLabel(root, 460, 34, 0, -260, $"Invite from {_pendingInviteFrom}: {_pendingInviteWorldId}");
                 Builder.CreateButton(root, 210, 42, 0, -315, AcceptPendingInvite, "ACCEPT INVITE");
             }
-            Builder.CreateButton(root, 180, 38, 0, -390, HideWorldToolsPanel, "BACK");
+            Builder.CreateButton(root, 150, 38, -165, -390, () => RequestTimewarp(1), "STOP WARP");
+            Builder.CreateButton(root, 150, 38, 0, -390, () => RequestTimewarp(4), "4X WARP");
+            Builder.CreateButton(root, 150, 38, 165, -390, () => RequestTimewarp(16), "16X WARP");
+            Builder.CreateButton(root, 180, 38, 0, -445, HideWorldToolsPanel, "BACK");
         }
 
         private void ClaimLocalBuild()
@@ -364,6 +368,35 @@ namespace SFSEnhanced.Mod.UI
             if (_chatLog.Count == 0) Builder.CreateLabel(_chatResultsHolder.transform, 450, 28, 0, -205, "No messages yet.");
         }
 
+        private void ShowTimeWarpVote(TimeWarpVotePacket vote)
+        {
+            if (_timeWarpVoteHolder != null) UnityEngine.Object.Destroy(_timeWarpVoteHolder);
+            _timeWarpVoteHolder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "SFSEnhanced_TimeWarpVote");
+            var window = Builder.CreateWindow(_timeWarpVoteHolder.transform, Builder.GetRandomID(), 420, 260, 0, 0, true, true, 0.98f, "Timewarp Vote");
+            var root = window.ChildrenHolder;
+            Builder.CreateLabel(root, 380, 34, 0, -38, $"{vote.RequesterPlayerName} requests {vote.RequestedMultiplier:0.##}x timewarp");
+            Builder.CreateButton(root, 160, 42, -90, -100, () => SubmitTimeWarpVote(vote, true), "APPROVE");
+            Builder.CreateButton(root, 160, 42, 90, -100, () => SubmitTimeWarpVote(vote, false), "REJECT");
+            Builder.CreateLabel(root, 380, 30, 0, -165, "All players must approve the request.");
+        }
+
+        private void SubmitTimeWarpVote(TimeWarpVotePacket vote, bool approved)
+        {
+            if (_timeWarpVoteHolder != null) UnityEngine.Object.Destroy(_timeWarpVoteHolder);
+            _timeWarpVoteHolder = null;
+            _ = _mod.Client.SendAsync(PacketType.TimeWarpVoteResponse, new TimeWarpVoteResponsePacket { WorldId = vote.WorldId, VoteId = vote.VoteId, Approved = approved });
+            SetStatus(approved ? "Timewarp vote approved." : "Timewarp vote rejected.");
+        }
+        private void RequestTimewarp(double multiplier)
+        {
+            if (!_mod.Client.IsConnected || string.IsNullOrEmpty(_mod.Client.CurrentWorldId))
+            {
+                SetStatus("Join a world to control timewarp.");
+                return;
+            }
+            _ = _mod.Client.SendAsync(PacketType.TimeWarpRequest, new TimeWarpRequestPacket { WorldId = _mod.Client.CurrentWorldId, RequestedMultiplier = multiplier });
+            SetStatus($"Requested {multiplier:0.##}x timewarp.");
+        }
         private void ShowHostControls()
         {
             string executable = ModSettings.ServerExecutablePath;
@@ -676,7 +709,22 @@ namespace SFSEnhanced.Mod.UI
                         SetStatus($"World invite received from {invite.TargetPlayerName}.");
                     }
                     break;
-                case PacketType.Error:
+                case PacketType.TimeWarpVote:
+                    var vote = Newtonsoft.Json.JsonConvert.DeserializeObject<TimeWarpVotePacket>(json);
+                    if (vote != null) ShowTimeWarpVote(vote);
+                    break;
+                case PacketType.TimeWarpResult:
+                    var result = Newtonsoft.Json.JsonConvert.DeserializeObject<TimeWarpResultPacket>(json);
+                    if (result != null) SetStatus(result.Approved ? $"Timewarp: {result.ActualMultiplier:0.##}x" : result.Reason);
+                    break;
+                case PacketType.PlayerConnected:
+                    var connected = Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerPresencePacket>(json);
+                    if (connected != null) SetStatus($"{connected.PlayerName} connected.");
+                    break;
+                case PacketType.PlayerDisconnected:
+                    var disconnected = Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerPresencePacket>(json);
+                    if (disconnected != null) SetStatus($"{disconnected.PlayerName} disconnected.");
+                    break;                case PacketType.Error:
                     var error = Newtonsoft.Json.JsonConvert.DeserializeObject<ErrorPacket>(json);
                     SetStatus(error?.Message ?? "Server error");
                     break;

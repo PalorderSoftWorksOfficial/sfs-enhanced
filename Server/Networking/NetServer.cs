@@ -28,6 +28,8 @@ namespace SFSEnhanced.Server.Networking
         private readonly ClaimsService _claims;
         private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
         private readonly ConcurrentDictionary<string, List<string>> _pendingUploads = new();
+        private readonly ConcurrentDictionary<string, TimeWarpVoteState> _timeWarpVotes = new();
+        private int _nextVoteId;
 
         public int ConnectedPlayerCount => _connections.Count;
 
@@ -197,6 +199,15 @@ namespace SFSEnhanced.Server.Networking
                         case PacketType.BuildRemove:
                             await HandleBuildRemove(conn, playerId, Deserialize<BuildSnapshot>(json));
                             break;
+                        case PacketType.RocketPrimaryState:
+                            await HandleRocketPrimaryState(conn, playerId, Deserialize<RocketPrimaryStatePacket>(json));
+                            break;
+                        case PacketType.RocketSecondaryState:
+                            await HandleRocketSecondaryState(conn, playerId, Deserialize<RocketSecondaryStatePacket>(json));
+                            break;
+                        case PacketType.PartModuleState:
+                            await HandlePartModuleState(conn, playerId, Deserialize<PartModuleStatePacket>(json));
+                            break;
                         case PacketType.BuildControlRequest:
                             await HandleBuildControlRequest(conn, playerId, Deserialize<BuildControlRequestPacket>(json));
                             break;
@@ -217,6 +228,9 @@ namespace SFSEnhanced.Server.Networking
                             break;
                         case PacketType.ChatMessage:
                             await HandleChat(conn, Deserialize<ChatMessagePacket>(json));
+                            break;
+                        case PacketType.TimeWarpVoteResponse:
+                            await HandleTimeWarpVoteResponse(conn, playerId, Deserialize<TimeWarpVoteResponsePacket>(json));
                             break;
                         case PacketType.TimeWarpRequest:
                             await HandleTimeWarp(conn, playerId, Deserialize<TimeWarpRequestPacket>(json));
@@ -420,6 +434,55 @@ namespace SFSEnhanced.Server.Networking
             }
         }
 
+        private async Task HandleRocketPrimaryState(ClientConnection conn, string playerId, RocketPrimaryStatePacket state)
+        {
+            if (state == null || conn.CurrentWorldId == null || state.WorldId != conn.CurrentWorldId) return;
+            var update = new BuildStateUpdatePacket
+            {
+                WorldId = state.WorldId,
+                BuildId = state.BuildId,
+                PosX = state.PosX,
+                PosY = state.PosY,
+                VelX = state.VelX,
+                VelY = state.VelY,
+                RotationDegrees = state.RotationDegrees,
+                AngularVelocity = state.AngularVelocity,
+                PlanetAddress = state.PlanetAddress,
+                WorldTime = state.WorldTime,
+                Tick = state.Tick
+            };
+            if (!IsFinite(state.PosX) || !IsFinite(state.PosY) || !IsFinite(state.VelX) || !IsFinite(state.VelY) || !IsFinite(state.RotationDegrees) || !IsFinite(state.AngularVelocity) || !IsFinite(state.WorldTime))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Rocket state contains invalid numeric values." });
+                return;
+            }
+            var build = _worlds.FindBuild(conn.CurrentWorldId, state.BuildId);
+            if (build == null || (build.OwnerPlayerId != playerId && build.ControllingPlayerId != playerId)) return;
+            if (!_claims.CanInteract(conn.CurrentWorldId, state.BuildId, playerId)) return;
+            _worlds.ApplyStateUpdate(conn.CurrentWorldId, update);
+            await BroadcastToWorld(conn.CurrentWorldId, PacketType.RocketPrimaryState, state, playerId);
+        }
+
+        private async Task HandleRocketSecondaryState(ClientConnection conn, string playerId, RocketSecondaryStatePacket state)
+        {
+            if (state == null || conn.CurrentWorldId == null || state.WorldId != conn.CurrentWorldId) return;
+            var build = _worlds.FindBuild(conn.CurrentWorldId, state.BuildId);
+            if (build == null || (build.OwnerPlayerId != playerId && build.ControllingPlayerId != playerId)) return;
+            await BroadcastToWorld(conn.CurrentWorldId, PacketType.RocketSecondaryState, state, playerId);
+        }
+
+        private async Task HandlePartModuleState(ClientConnection conn, string playerId, PartModuleStatePacket state)
+        {
+            if (state == null || conn.CurrentWorldId == null || state.WorldId != conn.CurrentWorldId) return;
+            if (!IsFinite(state.Value))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Part module state contains an invalid value." });
+                return;
+            }
+            var build = _worlds.FindBuild(conn.CurrentWorldId, state.BuildId);
+            if (build == null || (build.OwnerPlayerId != playerId && build.ControllingPlayerId != playerId)) return;
+            await BroadcastToWorld(conn.CurrentWorldId, PacketType.PartModuleState, state, playerId);
+        }
         private async Task HandleBuildSpawn(ClientConnection conn, string playerId, BuildSnapshot build)
         {
             if (conn.CurrentWorldId == null || build == null) return;
@@ -560,36 +623,79 @@ namespace SFSEnhanced.Server.Networking
             else await BroadcastToAll(PacketType.ChatMessage, msg, null);
         }
 
+        private async Task HandleTimeWarpVoteResponse(ClientConnection conn, string playerId, TimeWarpVoteResponsePacket response)
+        {
+            if (response == null || conn.CurrentWorldId == null || response.WorldId != conn.CurrentWorldId) return;
+            if (!_timeWarpVotes.TryGetValue(response.WorldId, out var vote) || vote.VoteId != response.VoteId) return;
+            lock (vote)
+            {
+                if (vote.Completed || DateTime.UtcNow > vote.ExpiresUtc) return;
+                vote.Votes[playerId] = response.Approved;
+                if (vote.Votes.Count < vote.PlayerIds.Count) return;
+                vote.Completed = true;
+            }
+            bool approved = vote.Votes.Values.All(v => v);
+            var world = _worlds.Get(response.WorldId);
+            if (world == null) return;
+            AdvanceWorldTime(world);
+            double actual = approved ? vote.RequestedMultiplier : 1.0;
+            if (actual > 1.0 && IsAnyPlayerNearby(world)) actual = 1.0;
+            world.TimewarpMultiplier = actual;
+            _worlds.Persist(response.WorldId);
+            _timeWarpVotes.TryRemove(response.WorldId, out _);
+            await BroadcastToWorld(response.WorldId, PacketType.TimeWarpResult, new TimeWarpResultPacket { WorldId = response.WorldId, VoteId = response.VoteId, Approved = approved, ActualMultiplier = actual, Reason = approved ? "Vote approved." : "A player rejected the request." }, null);
+        }
+
+        private static bool IsAnyPlayerNearby(WorldRecord world)
+        {
+            const double radiusMeters = 50000;
+            var builds = world.Builds.Where(b => b != null).ToList();
+            for (int i = 0; i < builds.Count; i++)
+            for (int j = i + 1; j < builds.Count; j++)
+            {
+                if (!string.Equals(builds[i].PlanetAddress, builds[j].PlanetAddress, StringComparison.Ordinal)) continue;
+                double dx = builds[i].PosX - builds[j].PosX;
+                double dy = builds[i].PosY - builds[j].PosY;
+                if (dx * dx + dy * dy <= radiusMeters * radiusMeters) return true;
+            }
+            return false;
+        }
         private async Task HandleTimeWarp(ClientConnection conn, string playerId, TimeWarpRequestPacket req)
         {
             if (req == null || conn.CurrentWorldId == null || req.WorldId != conn.CurrentWorldId) return;
             var world = _worlds.Get(conn.CurrentWorldId);
             if (world == null) return;
             AdvanceWorldTime(world);
-            bool locked = IsProximityLocked(world, playerId);
             double requested = req.RequestedMultiplier < 1 ? 1 : Math.Min(req.RequestedMultiplier, 1000);
-            double actual = locked && requested > 1 ? 1 : requested;
-            await BroadcastToWorld(conn.CurrentWorldId, PacketType.TimeWarpState, new TimeWarpStatePacket { WorldId = conn.CurrentWorldId, ActualMultiplier = actual, LockedByProximity = locked }, null);
-        }
-
-        private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
-
-        private static bool IsProximityLocked(WorldRecord world, string playerId)
-        {
-            const double radiusMeters = 50000;
-            var mine = world.Builds.Where(b => b != null && b.OwnerPlayerId == playerId).ToList();
-            var others = world.Builds.Where(b => b != null && b.OwnerPlayerId != playerId).ToList();
-            foreach (var a in mine)
-            foreach (var b in others)
+            var players = _connections.Values.Where(c => c.CurrentWorldId == world.WorldId && c.Account != null).Select(c => c.Account.PlayerId).Distinct().ToList();
+            if (players.Count <= 1)
             {
-                if (!string.Equals(a.PlanetAddress, b.PlanetAddress, StringComparison.Ordinal)) continue;
-                double dx = a.PosX - b.PosX;
-                double dy = a.PosY - b.PosY;
-                if (dx * dx + dy * dy <= radiusMeters * radiusMeters) return true;
+                world.TimewarpMultiplier = requested;
+                _worlds.Persist(world.WorldId);
+                await BroadcastToWorld(world.WorldId, PacketType.TimeWarpResult, new TimeWarpResultPacket { WorldId = world.WorldId, VoteId = 0, Approved = true, ActualMultiplier = requested, Reason = "Single-player world." }, null);
+                return;
             }
-            return false;
+            if (_timeWarpVotes.ContainsKey(world.WorldId))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "A time-warp vote is already active." });
+                return;
+            }
+            var vote = new TimeWarpVoteState { VoteId = Interlocked.Increment(ref _nextVoteId), WorldId = world.WorldId, RequestedMultiplier = requested, ExpiresUtc = DateTime.UtcNow.AddSeconds(15) };
+            vote.PlayerIds.AddRange(players);
+            vote.Votes[playerId] = true;
+            _timeWarpVotes[world.WorldId] = vote;
+            await BroadcastToWorld(world.WorldId, PacketType.TimeWarpVote, new TimeWarpVotePacket { WorldId = world.WorldId, RequesterPlayerId = playerId, RequesterPlayerName = conn.Account.PlayerName, VoteId = vote.VoteId, RequestedMultiplier = requested }, null);
+            _ = CompleteExpiredVoteAsync(vote);
         }
 
+        private async Task CompleteExpiredVoteAsync(TimeWarpVoteState vote)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(15));
+            if (!_timeWarpVotes.TryGetValue(vote.WorldId, out var current) || !ReferenceEquals(current, vote)) return;
+            lock (vote) vote.Completed = true;
+            _timeWarpVotes.TryRemove(vote.WorldId, out _);
+            await BroadcastToWorld(vote.WorldId, PacketType.TimeWarpResult, new TimeWarpResultPacket { WorldId = vote.WorldId, VoteId = vote.VoteId, Approved = false, ActualMultiplier = 1.0, Reason = "Time-warp vote timed out." }, null);
+        }
         private async Task HandleFriendInvite(ClientConnection conn, FriendInviteToWorldPacket invite)
         {
             if (invite == null) return;
@@ -607,6 +713,19 @@ namespace SFSEnhanced.Server.Networking
             string worldId = invite.WorldId ?? conn.CurrentWorldId;
             await targetConn.SendAsync(PacketType.FriendInviteToWorld, new FriendInviteToWorldPacket { TargetPlayerName = conn.Account.PlayerName, WorldId = worldId });
         }
+
+        private sealed class TimeWarpVoteState
+        {
+            public string WorldId;
+            public int VoteId;
+            public double RequestedMultiplier;
+            public DateTime ExpiresUtc;
+            public bool Completed;
+            public readonly List<string> PlayerIds = new();
+            public readonly Dictionary<string, bool> Votes = new();
+        }
+
+        private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
         private async Task BroadcastToWorld(string worldId, PacketType type, object payload, string exceptPlayerId)
         {

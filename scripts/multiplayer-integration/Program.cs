@@ -94,6 +94,28 @@ await SendAsync(aliceStream, PacketType.BuildSpawn, new BuildSnapshot
 var spawn = await ReceiveTypeAsync<BuildSnapshot>(bobStream, PacketType.BuildSpawn);
 if (spawn.BuildId != "build-1") throw new InvalidOperationException("Build spawn mismatch.");
 
+await SendAsync(aliceStream, PacketType.RocketPrimaryState, new RocketPrimaryStatePacket
+{
+    WorldId = worldId,
+    BuildId = "build-1",
+    PosX = 10,
+    PosY = 20,
+    VelX = 3,
+    VelY = 4,
+    RotationDegrees = 15,
+    AngularVelocity = 2,
+    PlanetAddress = "Earth",
+    WorldTime = 12,
+    Tick = 1
+});
+var primary = await ReceiveTypeAsync<RocketPrimaryStatePacket>(bobStream, PacketType.RocketPrimaryState);
+if (primary.BuildId != "build-1" || primary.PosX != 10 || primary.Tick != 1) throw new InvalidOperationException("Rocket primary state mismatch.");
+await SendAsync(aliceStream, PacketType.RocketSecondaryState, new RocketSecondaryStatePacket { WorldId = worldId, BuildId = "build-1", ThrottlePercent = 75, RcsEnabled = true, EnginesEnabled = true, Tick = 2 });
+var secondary = await ReceiveTypeAsync<RocketSecondaryStatePacket>(bobStream, PacketType.RocketSecondaryState);
+if (secondary.ThrottlePercent != 75 || !secondary.RcsEnabled || secondary.Tick != 2) throw new InvalidOperationException("Rocket secondary state mismatch.");
+await SendAsync(aliceStream, PacketType.PartModuleState, new PartModuleStatePacket { WorldId = worldId, BuildId = "build-1", PartId = "engine-1", ModuleType = "engine", Enabled = true, Value = 1, Tick = 3 });
+var module = await ReceiveTypeAsync<PartModuleStatePacket>(bobStream, PacketType.PartModuleState);
+if (module.PartId != "engine-1" || !module.Enabled) throw new InvalidOperationException("Part module state mismatch.");
 await SendAsync(aliceStream, PacketType.ClaimCreate, new ClaimCreatePacket
 {
     WorldId = worldId,
@@ -136,6 +158,14 @@ var chat = await ReceiveTypeAsync<ChatMessagePacket>(bobStream, PacketType.ChatM
 var chatOwner = await ReceiveTypeAsync<ChatMessagePacket>(aliceStream, PacketType.ChatMessage);
 if (chat.Message != "integration chat" || chat.FromPlayerName != $"{aliceName}" || chatOwner.Message != "integration chat") throw new InvalidOperationException("Chat payload mismatch.");
 
+await SendAsync(aliceStream, PacketType.TimeWarpRequest, new TimeWarpRequestPacket { WorldId = worldId, RequestedMultiplier = 4 });
+var voteAlice = await ReceiveTypeAsync<TimeWarpVotePacket>(aliceStream, PacketType.TimeWarpVote);
+var voteBob = await ReceiveTypeAsync<TimeWarpVotePacket>(bobStream, PacketType.TimeWarpVote);
+if (voteAlice.VoteId != voteBob.VoteId || voteAlice.RequestedMultiplier != 4) throw new InvalidOperationException("Timewarp vote broadcast mismatch.");
+await SendAsync(bobStream, PacketType.TimeWarpVoteResponse, new TimeWarpVoteResponsePacket { WorldId = worldId, VoteId = voteBob.VoteId, Approved = true });
+var warpAlice = await ReceiveTypeAsync<TimeWarpResultPacket>(aliceStream, PacketType.TimeWarpResult);
+var warpBob = await ReceiveTypeAsync<TimeWarpResultPacket>(bobStream, PacketType.TimeWarpResult);
+if (!warpAlice.Approved || !warpBob.Approved || warpAlice.ActualMultiplier != 4 || warpBob.ActualMultiplier != 4) throw new InvalidOperationException("Timewarp result mismatch.");
 await SendAsync(bobStream, PacketType.WorldLeave, new { });
 await Task.Delay(100);
 await SendAsync(aliceStream, PacketType.WorldListRequest, new { });
