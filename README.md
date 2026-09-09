@@ -169,3 +169,37 @@ sfs-enhanced/
 ## License
 
 SFS Enhanced is distributed under the GNU General Public License v3.0 where GPL-covered upstream code has been incorporated. See `LICENSE` and `THIRD_PARTY_NOTICES.md` for the licensing and attribution record.
+
+## Package system
+
+SFS Enhanced supports `.sfspkg` and ordinary `.zip` packages. Drop an archive into `Mods\SFS Enhanced\Packages\` and it is installed on the next mod load. Packages can contain `package.json` for explicit file mappings, dependencies, and version metadata. Legacy archives without a manifest are also supported when they contain supported top-level folders such as `Mods`, `Saving`, `Resources`, `StreamingAssets`, or `UserData`.
+
+Example manifest:
+
+```json
+{
+  "id": "example-package",
+  "name": "Example Package",
+  "version": "1.0.0",
+  "author": "Author",
+  "description": "Example SFS package",
+  "minimumSfsEnhancedVersion": "0.1.0",
+  "dependencies": [],
+  "files": [
+    {
+      "source": "Mods/ExamplePackage/example.dll",
+      "target": "Mods/ExamplePackage/example.dll"
+    }
+  ]
+}
+```
+
+The installer validates package IDs and paths, rejects path traversal, creates backups when existing files are replaced, tracks installed packages, and can restore files during package removal.
+
+## Upstream implementation references
+
+The multiplayer architecture is also being developed with the GPL-3.0 `SFSPlayer-sys/Spaceflight-Simulator-MultiplayerMod` implementation as a source reference, particularly its world-state model, packet definitions, interpolation, server UI, host/join flow, and patch organization. The project is GPL-3.0, so adapted source remains under compatible licensing and attribution is retained.
+
+`cucumber-sp/UITools` is used as a UI architecture reference for reusable builders, closable windows, persisted window behavior, numeric inputs, and button state helpers. Its repository does not expose a license file, so SFS Enhanced does not wholesale copy its source; compatible functionality is implemented independently while following the same useful API concepts.
+
+`105-Code/MorePartsMod` is Apache-2.0 licensed and is a supported example of the kind of mod/package content the package system is designed to install.

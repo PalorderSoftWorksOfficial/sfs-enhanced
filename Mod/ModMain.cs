@@ -1,7 +1,7 @@
-using System;
 using ModLoader;
 using ModLoader.Helpers;
 using SFSEnhanced.Mod.Networking;
+using SFSEnhanced.Mod.Packaging;
 using SFSEnhanced.Mod.Social;
 using SFSEnhanced.Mod.UI;
 using SFSEnhanced.Mod.World;
@@ -36,13 +36,13 @@ namespace SFSEnhanced.Mod
             Builds = new MultiBuildManager(Client);
             Friends = new FriendsUI(Client);
             Menu = new MultiplayerMenu(this);
+            PackageManager.Initialize(ModFolder.ToString());
 
             _host = new GameObject("SFSEnhanced");
             UnityEngine.Object.DontDestroyOnLoad(_host);
             _host.AddComponent<ModLoop>().Bind(this);
 
-            SceneHelper.OnWorldSceneLoaded += new Action<Scene>(_ => OnWorldLoaded());
-
+            SceneHelper.OnWorldSceneLoaded += new System.Action<Scene>(_ => OnWorldLoaded());
             Debug.Log("[SFSEnhanced] Loaded. Multiplayer is available from the SFS main menu.");
         }
 
@@ -58,6 +58,7 @@ namespace SFSEnhanced.Mod
             ModSettings.PlayerName = playerName;
             bool ok = await Client.ConnectAsync(host, port, playerName);
             Debug.Log(ok ? $"[SFSEnhanced] Connected to {host} as {playerName}" : "[SFSEnhanced] Connection failed.");
+            if (ok) ServerHistory.Record(host, port, host);
         }
     }
 

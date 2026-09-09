@@ -43,3 +43,25 @@ Feature ideas and general UI patterns are not presented as copied code. Independ
 ## GPL compliance
 
 Where GPL-covered code forms part of SFS Enhanced, the resulting covered work is distributed under GPL-3.0. The repository includes the corresponding license text and source needed to exercise the rights granted by that license.
+
+## SFSPlayer-sys Spaceflight Simulator MultiplayerMod
+
+Repository: https://github.com/SFSPlayer-sys/Spaceflight-Simulator-MultiplayerMod
+
+License: GPL-3.0.
+
+The project is used as an implementation reference for multiplayer world state, packet design, interpolation, host/join flows, server UI, and Harmony patch organization. Any directly adapted source is treated as GPL-covered code and remains subject to the applicable GPL-3.0 terms.
+
+## cucumber-sp UITools
+
+Repository: https://github.com/cucumber-sp/UITools
+
+The repository describes UITools as a reusable SFS UI dependency and provides builders, closable windows, position persistence, numeric inputs, and button helpers. No license file was exposed in the repository tree inspected for this project. SFS Enhanced therefore uses its public API concepts and UI architecture as inspiration rather than copying the repository wholesale.
+
+## 105-Code MorePartsMod
+
+Repository: https://github.com/105-Code/MorePartsMod
+
+License: Apache-2.0.
+
+MorePartsMod is an example of the type of SFS mod package that SFS Enhanced's package installer is designed to consume. Its code is not bundled into SFS Enhanced.
