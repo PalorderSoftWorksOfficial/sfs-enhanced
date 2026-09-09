@@ -268,7 +268,7 @@ namespace SFSEnhanced.Mod.UI
             foreach (var world in worlds)
             {
                 var capturedWorldId = world.WorldId;
-                Builder.CreateButton(_worldListHolder.transform, 440, 40, 0, -index * 44f, () => JoinWorld(capturedWorldId), world.Name);
+                Builder.CreateButton(_worldListHolder.transform, 440, 40, 0, -index * 44, () => JoinWorld(capturedWorldId), world.Name);
                 index++;
                 if (index >= 10)
                     break;
