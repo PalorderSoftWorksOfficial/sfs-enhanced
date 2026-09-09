@@ -4,6 +4,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+using System.Net.Security;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +21,7 @@ namespace SFSEnhanced.Server.Networking
     public class NetServer
     {
         private readonly ServerConfig _config;
+        private readonly X509Certificate2 _certificate;
         private readonly AccountService _accounts;
         private readonly WorldManager _worlds;
         private readonly FriendsService _friends;
@@ -27,8 +31,9 @@ namespace SFSEnhanced.Server.Networking
 
         public int ConnectedPlayerCount => _connections.Count;
 
-        public NetServer(ServerConfig config, AccountService accounts, WorldManager worlds, FriendsService friends, ClaimsService claims)
+        public NetServer(ServerConfig config, X509Certificate2 certificate, AccountService accounts, WorldManager worlds, FriendsService friends, ClaimsService claims)
         {
+            _certificate = certificate;
             _config = config;
             _accounts = accounts;
             _worlds = worlds;
@@ -77,6 +82,9 @@ namespace SFSEnhanced.Server.Networking
         private async Task HandleClientAsync(TcpClient tcpClient, CancellationToken ct)
         {
             var conn = new ClientConnection(tcpClient);
+            var ssl = new SslStream(conn.Stream, false);
+            await ssl.AuthenticateAsServerAsync(_certificate, false, SslProtocols.Tls12 | SslProtocols.Tls13, true);
+            conn.SetStream(ssl);
             string playerId = null;
 
             try
@@ -88,7 +96,13 @@ namespace SFSEnhanced.Server.Networking
 
                     if (type != PacketType.Hello && type != PacketType.Ping && playerId == null)
                     {
-                        await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Send Hello before other packets." });
+                        await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Authentication is required before this packet." });
+                        continue;
+                    }
+
+                    if (type == PacketType.Hello && playerId != null)
+                    {
+                        await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "This connection is already authenticated." });
                         continue;
                     }
 

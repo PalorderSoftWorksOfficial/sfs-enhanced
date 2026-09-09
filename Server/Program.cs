@@ -24,6 +24,9 @@ namespace SFSEnhanced.Server
         public string GameVersion = "1.5+";
         public string ModVersion = "0.1.0";
         public bool PasswordProtected;
+        public string CertificatePath = "./data/server-cert.pfx";
+        public string CertificatePassword = "change-this-certificate-password";
+        public string CertificateFingerprint;
 
         public static ServerConfig Load(string path)
         {
@@ -70,7 +73,10 @@ namespace SFSEnhanced.Server
             var worlds = new WorldManager(store);
             var friends = new FriendsService(accounts);
             var claims = new ClaimsService(worlds);
-            var server = new NetServer(config, accounts, worlds, friends, claims);
+            var certificate = TlsCertificateProvider.LoadOrCreate(config.CertificatePath, config.CertificatePassword, "CN=SFS Enhanced Server");
+            config.CertificateFingerprint = TlsCertificateProvider.Fingerprint(certificate);
+            Console.WriteLine($"TLS fingerprint: {config.CertificateFingerprint}");
+            var server = new NetServer(config, certificate, accounts, worlds, friends, claims);
             var publisher = new ServerDirectoryPublisher(config);
 
             using var cts = new CancellationTokenSource();

@@ -37,6 +37,7 @@ app.MapPost("/api/v1/servers/register", (ServerRegisterRequest request) =>
         Motd = request.Motd ?? string.Empty,
         MaxPlayers = Math.Max(1, request.MaxPlayers),
         PasswordProtected = request.PasswordProtected,
+        CertificateFingerprint = request.CertificateFingerprint,
         LastHeartbeatUtc = DateTime.UtcNow
     };
     servers[id] = new RegisteredServer(listing, token);

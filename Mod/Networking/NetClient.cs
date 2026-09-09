@@ -1,6 +1,11 @@
 using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using SFSEnhanced.Shared.Protocol;
@@ -10,7 +15,7 @@ namespace SFSEnhanced.Mod.Networking
     public class NetClient
     {
         private TcpClient _tcp;
-        private NetworkStream _stream;
+        private Stream _stream;
         private CancellationTokenSource _cts;
         private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
         private int _connectionGeneration;
@@ -30,16 +35,23 @@ namespace SFSEnhanced.Mod.Networking
             AuthToken = SFSEnhanced.Mod.ModSettings.AuthToken;
         }
 
-        public async Task<bool> ConnectAsync(string host, int port, string playerName)
+        public Task<bool> ConnectAsync(string host, int port, string playerName) => ConnectAsync(host, (int?)port, playerName);
+
+        public async Task<bool> ConnectAsync(string host, int? port, string playerName)
         {
             Disconnect();
 
             try
             {
                 var generation = Interlocked.Increment(ref _connectionGeneration);
+                var endpoint = await ServerEndpointResolver.ResolveAsync(host, port).ConfigureAwait(false);
                 var tcp = new TcpClient();
-                await tcp.ConnectAsync(host, port);
-                var stream = tcp.GetStream();
+                await tcp.ConnectAsync(endpoint.Host, endpoint.Port).ConfigureAwait(false);
+                var stream = new SslStream(tcp.GetStream(), false, (sender, certificate, chain, errors) => ValidateServerCertificate(host, certificate, chain, errors));
+                await stream.AuthenticateAsClientAsync(endpoint.Host, null, SslProtocols.Tls12, false).ConfigureAwait(false);
+                var fingerprint = GetFingerprint(stream.RemoteCertificate);
+                if (string.IsNullOrWhiteSpace(ModSettings.GetServerCertificateFingerprint(host)))
+                    ModSettings.SetServerCertificateFingerprint(host, fingerprint);
                 var cts = new CancellationTokenSource();
                 _tcp = tcp;
                 _stream = stream;
@@ -62,6 +74,20 @@ namespace SFSEnhanced.Mod.Networking
                 Disconnect();
                 return false;
             }
+        }
+
+        private static bool ValidateServerCertificate(string host, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
+        {
+            if (certificate == null) return false;
+            string fingerprint = GetFingerprint(certificate);
+            string pinned = ModSettings.GetServerCertificateFingerprint(host);
+            return string.IsNullOrWhiteSpace(pinned) || string.Equals(pinned, fingerprint, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetFingerprint(X509Certificate certificate)
+        {
+            using var sha = SHA256.Create();
+            return BitConverter.ToString(sha.ComputeHash(certificate.GetRawCertData())).Replace("-", string.Empty);
         }
 
         public void Disconnect()
@@ -160,7 +186,7 @@ namespace SFSEnhanced.Mod.Networking
             }
         }
 
-        private async Task ReadLoopAsync(NetworkStream stream, CancellationToken ct, int generation)
+        private async Task ReadLoopAsync(Stream stream, CancellationToken ct, int generation)
         {
             try
             {

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using SFSEnhanced.Shared.Models;
@@ -9,7 +10,7 @@ namespace SFSEnhanced.Server.Networking
     public class ClientConnection
     {
         public TcpClient Socket { get; }
-        public NetworkStream Stream { get; }
+        public Stream Stream { get; private set; }
         public PlayerAccount Account { get; set; }
         public string CurrentWorldId { get; set; }
         private readonly SemaphoreSlimLite _writeLock = new();
@@ -19,6 +20,8 @@ namespace SFSEnhanced.Server.Networking
             Socket = socket;
             Stream = socket.GetStream();
         }
+
+        public void SetStream(Stream stream) => Stream = stream;
 
         public async Task SendAsync(PacketType type, object payload)
         {

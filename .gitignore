@@ -1,0 +1,13 @@
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+logs/
+temp-integration-data/
+*-test.log
+*-test.err
+/data/
+/worlds/
