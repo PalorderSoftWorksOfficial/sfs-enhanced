@@ -8,3 +8,14 @@ D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.AssemblyInfo.
 D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.csproj.CoreCompileInputs.cache
 D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.dll
 D:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.pdb
+C:\sfs-enhanced\Shared\bin\Debug\netstandard2.0\SFSEnhanced.Shared.deps.json
+C:\sfs-enhanced\Shared\bin\Debug\netstandard2.0\SFSEnhanced.Shared.dll
+C:\sfs-enhanced\Shared\bin\Debug\netstandard2.0\SFSEnhanced.Shared.pdb
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.csproj.AssemblyReference.cache
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.GeneratedMSBuildEditorConfig.editorconfig
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.AssemblyInfoInputs.cache
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.AssemblyInfo.cs
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.csproj.CoreCompileInputs.cache
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.sourcelink.json
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.dll
+C:\sfs-enhanced\Shared\obj\Debug\netstandard2.0\SFSEnhanced.Shared.pdb

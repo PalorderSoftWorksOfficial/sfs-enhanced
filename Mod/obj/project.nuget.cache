@@ -1,10 +1,12 @@
 {
   "version": 2,
-  "dgSpecHash": "MLzVNqsE/cU=",
+  "dgSpecHash": "9ozwwQg4Lfo=",
   "success": true,
-  "projectFilePath": "D:\\sfs-enhanced\\Mod\\SFSEnhanced.Mod.csproj",
+  "projectFilePath": "C:\\sfs-enhanced\\Mod\\SFSEnhanced.Mod.csproj",
   "expectedPackageFiles": [
-    "C:\\Users\\User\\.nuget\\packages\\newtonsoft.json\\13.0.3\\newtonsoft.json.13.0.3.nupkg.sha512"
+    "C:\\Users\\Digibende\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
+    "C:\\Users\\Digibende\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net472\\1.0.3\\microsoft.netframework.referenceassemblies.net472.1.0.3.nupkg.sha512",
+    "C:\\Users\\Digibende\\.nuget\\packages\\newtonsoft.json\\13.0.3\\newtonsoft.json.13.0.3.nupkg.sha512"
   ],
   "logs": []
 }

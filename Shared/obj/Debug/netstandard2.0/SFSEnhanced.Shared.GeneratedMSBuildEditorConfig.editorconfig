@@ -1,6 +1,6 @@
 is_global = true
 build_property.RootNamespace = SFSEnhanced.Shared
-build_property.ProjectDir = D:\sfs-enhanced\Shared\
+build_property.ProjectDir = C:\sfs-enhanced\Shared\
 build_property.EnableComHosting = 
 build_property.EnableGeneratedComInterfaceComImportInterop = 
 build_property.CsWinRTUseWindowsUIXamlProjections = false

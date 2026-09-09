@@ -18,7 +18,7 @@ namespace SFSEnhanced.Mod
         public override string Author => "PalorderSoftWorksOfficial";
         public override string MinimumGameVersionNecessary => "1.5";
         public override string ModVersion => "0.1.1";
-        public override string Description => "Multiplayer menu and client for SFS Enhanced servers.";
+        public override string Description => "";
 
         public static ModMain Instance { get; private set; }
         public NetClient Client { get; private set; }
