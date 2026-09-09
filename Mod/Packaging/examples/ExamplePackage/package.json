@@ -1,0 +1,15 @@
+{
+  "id": "example-package",
+  "name": "Example Package",
+  "version": "1.0.0",
+  "author": "SFS Enhanced",
+  "description": "Example installable SFS Enhanced package.",
+  "minimumSfsEnhancedVersion": "0.1.0",
+  "dependencies": [],
+  "files": [
+    {
+      "source": "Mods/ExamplePackage/example.dll",
+      "target": "Mods/ExamplePackage/example.dll"
+    }
+  ]
+}

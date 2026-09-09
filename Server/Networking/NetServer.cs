@@ -4,6 +4,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+using System.Net.Security;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +21,7 @@ namespace SFSEnhanced.Server.Networking
     public class NetServer
     {
         private readonly ServerConfig _config;
+        private readonly X509Certificate2 _certificate;
         private readonly AccountService _accounts;
         private readonly WorldManager _worlds;
         private readonly FriendsService _friends;
@@ -27,8 +31,9 @@ namespace SFSEnhanced.Server.Networking
 
         public int ConnectedPlayerCount => _connections.Count;
 
-        public NetServer(ServerConfig config, AccountService accounts, WorldManager worlds, FriendsService friends, ClaimsService claims)
+        public NetServer(ServerConfig config, X509Certificate2 certificate, AccountService accounts, WorldManager worlds, FriendsService friends, ClaimsService claims)
         {
+            _certificate = certificate;
             _config = config;
             _accounts = accounts;
             _worlds = worlds;
@@ -41,6 +46,7 @@ namespace SFSEnhanced.Server.Networking
             var listener = new TcpListener(IPAddress.Any, _config.Port);
             listener.Start();
             var autosave = AutosaveLoopAsync(ct);
+            var worldTime = WorldTimeLoopAsync(ct);
 
             try
             {
@@ -58,9 +64,40 @@ namespace SFSEnhanced.Server.Networking
                 listener.Stop();
                 _worlds.PersistAll();
                 await autosave;
+                await worldTime;
             }
         }
 
+        private async Task WorldTimeLoopAsync(CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(250, ct);
+                    foreach (var world in _worlds.All().ToList())
+                    {
+                        AdvanceWorldTime(world);
+                        await BroadcastToWorld(world.WorldId, PacketType.WorldTimeState, new WorldTimeStatePacket
+                        {
+                            WorldId = world.WorldId,
+                            WorldTime = world.WorldTime,
+                            TimewarpMultiplier = world.TimewarpMultiplier,
+                            Tick = DateTime.UtcNow.Ticks
+                        }, null);
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+        }
+
+        private static void AdvanceWorldTime(WorldRecord world)
+        {
+            var now = DateTime.UtcNow;
+            double elapsed = (now - world.WorldTimeUpdatedUtc).TotalSeconds;
+            if (elapsed > 0) world.WorldTime += elapsed * Math.Max(0.0, world.TimewarpMultiplier);
+            world.WorldTimeUpdatedUtc = now;
+        }
         private async Task AutosaveLoopAsync(CancellationToken ct)
         {
             try
@@ -77,6 +114,9 @@ namespace SFSEnhanced.Server.Networking
         private async Task HandleClientAsync(TcpClient tcpClient, CancellationToken ct)
         {
             var conn = new ClientConnection(tcpClient);
+            var ssl = new SslStream(conn.Stream, false);
+            await ssl.AuthenticateAsServerAsync(_certificate, false, SslProtocols.Tls12 | SslProtocols.Tls13, true);
+            conn.SetStream(ssl);
             string playerId = null;
 
             try
@@ -88,7 +128,13 @@ namespace SFSEnhanced.Server.Networking
 
                     if (type != PacketType.Hello && type != PacketType.Ping && playerId == null)
                     {
-                        await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Send Hello before other packets." });
+                        await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Authentication is required before this packet." });
+                        continue;
+                    }
+
+                    if (type == PacketType.Hello && playerId != null)
+                    {
+                        await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "This connection is already authenticated." });
                         continue;
                     }
 
@@ -272,6 +318,7 @@ namespace SFSEnhanced.Server.Networking
             HandleWorldLeave(conn, playerId);
             var world = _worlds.Create(req.Name.Trim(), playerId, req.IsPublic, req.PlanetPackId);
             conn.CurrentWorldId = world.WorldId;
+            world.WorldTimeUpdatedUtc = DateTime.UtcNow;
             _friends.SetCurrentWorld(playerId, world.WorldId);
             await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = true, WorldId = world.WorldId, Builds = world.Builds, Claims = world.Claims, PlayersOnline = new List<string> { conn.Account.PlayerName } });
         }
@@ -291,6 +338,7 @@ namespace SFSEnhanced.Server.Networking
             }
             HandleWorldLeave(conn, playerId);
             conn.CurrentWorldId = world.WorldId;
+            world.WorldTimeUpdatedUtc = DateTime.UtcNow;
             _friends.SetCurrentWorld(playerId, world.WorldId);
             var playersInWorld = _connections.Values.Where(c => c.CurrentWorldId == world.WorldId && c.Account != null).Select(c => c.Account.PlayerName).Distinct().ToList();
             await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = true, WorldId = world.WorldId, Builds = world.Builds, Claims = world.Claims, PlayersOnline = playersInWorld });
@@ -394,7 +442,7 @@ namespace SFSEnhanced.Server.Networking
         private async Task HandleBuildStateUpdate(ClientConnection conn, string playerId, BuildStateUpdatePacket update)
         {
             if (conn.CurrentWorldId == null || update == null || string.IsNullOrEmpty(update.BuildId)) return;
-            if (!IsFinite(update.PosX) || !IsFinite(update.PosY) || !IsFinite(update.VelX) || !IsFinite(update.VelY) || !IsFinite(update.RotationDegrees) || !IsFinite(update.AngularVelocity))
+            if (!IsFinite(update.PosX) || !IsFinite(update.PosY) || !IsFinite(update.VelX) || !IsFinite(update.VelY) || !IsFinite(update.RotationDegrees) || !IsFinite(update.AngularVelocity) || !IsFinite(update.WorldTime))
             {
                 await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Build state contains invalid numeric values." });
                 return;
@@ -517,6 +565,7 @@ namespace SFSEnhanced.Server.Networking
             if (req == null || conn.CurrentWorldId == null || req.WorldId != conn.CurrentWorldId) return;
             var world = _worlds.Get(conn.CurrentWorldId);
             if (world == null) return;
+            AdvanceWorldTime(world);
             bool locked = IsProximityLocked(world, playerId);
             double requested = req.RequestedMultiplier < 1 ? 1 : Math.Min(req.RequestedMultiplier, 1000);
             double actual = locked && requested > 1 ? 1 : requested;

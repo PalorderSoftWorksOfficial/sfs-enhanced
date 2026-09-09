@@ -1,111 +1,205 @@
 # SFS Enhanced
 
-SFS Enhanced is a multiplayer mod and dedicated server project for Spaceflight Simulator.
+SFS Enhanced is a large-scale quality-of-life and multiplayer platform for Spaceflight Simulator. The project combines a native SFS mod, a standalone cross-platform server, public server discovery, persistent shared worlds, social systems, creator tooling, and gameplay extensions.
 
-The current release focuses on a reliable multiplayer entry point and client connection flow. Experimental synchronization and server features remain under development and are not advertised as finished.
+The project is designed around the native SFS modding APIs and a clean separation between game-side code and server-side code.
 
-## Current status
+## What it includes
 
-| Feature | Status |
-|---|---|
-| SFS native mod loader integration | Working |
-| Main-menu MULTIPLAYER button | Working |
-| F8 multiplayer menu toggle | Working |
-| Player name configuration | Working |
-| Direct TCP server connection | Working |
-| Server disconnect | Working |
-| World list request | Working |
-| World creation request | Working |
-| World joining request | Working |
-| Basic server information handling | Working |
-| Remote rocket synchronization | Experimental |
-| Build ownership and claims | Experimental |
-| Friends | Experimental |
-| Chat | Experimental |
-| Public server directory | Experimental |
-| World upload/download | Experimental |
-| Player-hosted server launch | Experimental |
-| Missions and events | Planned |
-| Factions and economies | Planned |
-| Creator and blueprint platform | Planned |
+- First-class Multiplayer entry in the SFS Play menu
+- Modal multiplayer UI that follows native SFS menu behavior
+- Direct server connection with optional port override
+- `_sfs._tcp` SRV discovery when no port is supplied
+- TLS-protected multiplayer transport
+- Persistent server-issued player authentication tokens
+- TLS certificate fingerprint pinning and first-connection trust
+- Public server directory and server browser
+- Persistent shared worlds
+- Multiple independently synchronized builds per world
+- Build ownership and region/build claims
+- Friends, requests, invitations, and world presence
+- World chat and server information
+- World upload and download support
+- Time-warp arbitration
+- Windows and Linux dedicated-server support
 
-## Installing the mod
+## Project status
 
-Build or download the `SFSEnhanced` mod package. The installed directory must contain both files:
+| Area | Status |
+| --- | --- |
+| Multiplayer menu | Active development |
+| Server discovery | Implemented |
+| SRV endpoint resolution | Implemented |
+| TLS transport | Implemented |
+| Persistent authentication | Implemented |
+| Shared worlds | Implemented with authoritative world clock |
+| Multi-build synchronization | Live state replication and interpolation |
+| Friends and invites | Implemented foundation |
+| Claims | Implemented foundation |
+| Chat | Implemented foundation |
+| Creator systems | In development |
+| Advanced SFS QoL systems | In development |
+| Full feature parity with referenced mods | Roadmap |
+
+## Multiplayer UX
+
+The multiplayer entry belongs to the Play flow rather than floating independently over the home screen. The multiplayer window is opened through SFS's screen system, so the underlying Play menu is no longer left active behind a second unrelated window.
+
+Secondary multiplayer pages are treated as pages of the same flow. Server browsing, world browsing, friends, chat, and world tools are designed to replace the front page rather than stack small windows on top of it.
+
+The connection form accepts a normal hostname. A port override is optional. Without one, SFS Enhanced first attempts `_sfs._tcp.<hostname>` SRV discovery and falls back to the default multiplayer port.
+
+## Security
+
+Multiplayer traffic is not sent as plaintext TCP. The server creates or loads a TLS certificate and the client establishes a TLS session before the SFS Enhanced protocol begins.
+
+Player authentication uses persistent opaque server-issued tokens. Tokens are stored server-side as SHA-256 hashes and are transmitted only inside the TLS connection.
+
+The client supports certificate fingerprint pinning. Public directory listings can publish the server certificate fingerprint so a client can verify the endpoint it connects to. Direct connections use first-connection trust when no fingerprint has previously been configured.
+
+This security model is intentionally separate from gameplay authorization. The server remains authoritative for worlds, builds, claims, player identity, and social actions.
+
+## Architecture
 
 ```text
-Mods/
-  SFSEnhanced/
-    SFSEnhanced.dll
-    mod.json
+SFS Enhanced
+├── Mod
+│   ├── native SFS integration
+│   ├── multiplayer UI
+│   ├── networking client
+│   ├── synchronized build systems
+│   └── creator and gameplay modules
+├── Shared
+│   ├── protocol
+│   └── shared models
+├── Server
+│   ├── TLS networking
+│   ├── accounts
+│   ├── worlds
+│   ├── builds
+│   ├── claims
+│   ├── friends
+│   └── chat
+├── Directory
+│   └── self-hostable public server registry
+└── scripts
+    └── builds and integration tests
 ```
 
-The GitHub Actions build artifact contains both files in the correct package directory.
-
-## Building the mod
-
-The mod targets .NET Framework 4.7.2 and references the Spaceflight Simulator game assemblies stored under `Dependencies/`.
-
-```powershell
-dotnet restore Mod/SFSEnhanced.Mod.csproj --configfile nuget.config
-dotnet build Mod/SFSEnhanced.Mod.csproj -c Release
-```
-
-The compiled assembly is produced at:
-
-```text
-Mod/bin/Release/net472/SFSEnhanced.dll
-```
-
-## Multiplayer menu
-
-When the mod loads, it waits for the SFS home screen's `Buttons` object and adds a `MULTIPLAYER` button. The menu provides:
-
-- Player name
-- Server host
-- Server port
-- Direct connection
-- Server disconnect
-- World list refresh
-- World creation
-- World joining
-
-Press `F8` to toggle the menu in-game.
+The dedicated server targets .NET 8 and does not load Unity or Spaceflight Simulator assemblies. The same server architecture is intended to run on Windows and Linux.
 
 ## Dedicated server
-
-The dedicated server is a separate .NET application. It does not load the Spaceflight Simulator executable.
 
 Windows:
 
 ```powershell
-cd Server
-dotnet run -- --port 7777 --name "My SFS Server" --data ./data --max-players 32
+dotnet run --project Server -- --port 7777 --name "My SFS Server" --data ./data
 ```
 
 Linux:
 
 ```bash
-cd Server
-dotnet run -- --port 7777 --name "My SFS Server" --data ./data --max-players 32
+dotnet run --project Server -- --port 7777 --name "My SFS Server" --data ./data
 ```
 
-## Protocol
+Self-contained publishing is available through the existing Windows and Linux publishing scripts.
 
-The client and server share the packet definitions under `Shared/Protocol/`. The current protocol includes connection, server discovery, world lifecycle, build synchronization, time control, social, claims, chat, and error message types.
+A server can advertise through a self-hosted directory with `--advertise`, `--directory`, `--public-host`, and `--region`.
 
-Protocol support does not mean every feature is production-ready. Check the status table above before depending on experimental systems.
+The server generates a TLS certificate at first launch when one is not supplied. The generated certificate fingerprint is printed to the server console and can be published with the server listing.
 
-## Development
+## Development workflow
 
-The project is split into:
+SFS Enhanced follows a concrete implementation workflow:
+
+1. Implement the next feature completely.
+2. Inspect the affected code and surrounding systems.
+3. Build every affected target.
+4. Run integration or smoke tests.
+5. Fix every discovered issue.
+6. Rebuild and retest.
+7. Only then begin the next feature.
+
+Repository inspection, builds, and verification are performed against the actual development checkout.
+
+## Design references and open-source work
+
+The project takes substantial design and implementation inspiration from established open-source SFS mods, particularly AstroTheRabbit's work. The referenced projects include Enhanced UX, Multiplayer SFS, Aero Trajectory, FSI Info Overload, Smart SAS, Custom Part Creator, Custom Save Data, Part Text, Stages Expanded, Forceful Fuel Tanks, World Build, and related SFS tooling.
+
+AstroTheRabbit's Enhanced UX repository is GPL-3.0 licensed, and the Multiplayer SFS repository is also distributed with a GPL-3.0 license. Those licenses permit reuse under their stated conditions and require corresponding licensing obligations for derivative GPL-covered work.
+
+Code is only incorporated where its license permits the intended reuse, and reused code is tracked in `THIRD_PARTY_NOTICES.md`. Features that are merely inspired by another project are implemented independently rather than represented as copied source.
+
+## Feature roadmap
+
+Live multiplayer synchronization now includes server-owned world time, remote rocket ghosting, 15 Hz state publishing, interpolation, and server-side numeric validation. The long-term goal is to consolidate useful capabilities from the referenced SFS ecosystem into one coherent project instead of producing a collection of disconnected menus and systems.
+
+Planned modules include:
+
+- Enhanced UX and settings infrastructure
+- Advanced trajectory and flight information
+- Smart SAS modes and targeting helpers
+- Expanded staging controls
+- Custom part authoring and part-data editing
+- Persistent custom save data for modded builds
+- Advanced part text tooling
+- World-build and creator workflows
+- Forceful fuel-tank behavior and other construction QoL features
+- Performance and loading optimizations
+- Expanded multiplayer moderation and administration
+- Server permissions, moderation, and account management
+- Blueprint and creator sharing
+
+Each module will be integrated into the shared SFS Enhanced architecture instead of being added as an isolated feature dump.
+
+## Repository layout
 
 ```text
-Mod/         SFS client mod
-Server/      Dedicated server
-Shared/      Client/server protocol and models
-Directory/   Public server directory service
-TestClient/  Protocol test client
+sfs-enhanced/
+├── Mod/                     SFS game-side mod
+├── Shared/                  shared protocol and models
+├── Server/                  standalone dedicated server
+├── Directory/               public server directory
+├── scripts/                 build and integration tooling
+├── docs/                    architecture and development notes
+├── THIRD_PARTY_NOTICES.md   third-party attribution and license notes
+└── LICENSE                  project license
 ```
 
-The client entry point is `Mod/ModMain.cs`. The multiplayer UI is `Mod/UI/MultiplayerMenu.cs`.
+## License
+
+SFS Enhanced is distributed under the GNU General Public License v3.0 where GPL-covered upstream code has been incorporated. See `LICENSE` and `THIRD_PARTY_NOTICES.md` for the licensing and attribution record.
+
+## Package system
+
+SFS Enhanced supports `.sfspkg` and ordinary `.zip` packages. Drop an archive into `Mods\SFS Enhanced\Packages\` and it is installed on the next mod load. Packages can contain `package.json` for explicit file mappings, dependencies, and version metadata. Legacy archives without a manifest are also supported when they contain supported top-level folders such as `Mods`, `Saving`, `Resources`, `StreamingAssets`, or `UserData`.
+
+Example manifest:
+
+```json
+{
+  "id": "example-package",
+  "name": "Example Package",
+  "version": "1.0.0",
+  "author": "Author",
+  "description": "Example SFS package",
+  "minimumSfsEnhancedVersion": "0.1.0",
+  "dependencies": [],
+  "files": [
+    {
+      "source": "Mods/ExamplePackage/example.dll",
+      "target": "Mods/ExamplePackage/example.dll"
+    }
+  ]
+}
+```
+
+The installer resolves package targets against the actual SFS game root, validates package IDs and paths, rejects path traversal, enforces minimum SFS Enhanced and dependency versions, creates backups when existing files are replaced, tracks installed packages, supports wrapper-directory archives, and can restore files during package removal.
+
+## Upstream implementation references
+
+The multiplayer architecture is also being developed with the GPL-3.0 `SFSPlayer-sys/Spaceflight-Simulator-MultiplayerMod` implementation as a source reference, particularly its world-state model, packet definitions, interpolation, server UI, host/join flow, and patch organization. The project is GPL-3.0, so adapted source remains under compatible licensing and attribution is retained.
+
+`cucumber-sp/UITools` is used as a UI architecture reference for reusable builders, closable windows, persisted window behavior, numeric inputs, and button state helpers. Its repository does not expose a license file, so SFS Enhanced does not wholesale copy its source; compatible functionality is implemented independently while following the same useful API concepts.
+
+`105-Code/MorePartsMod` is Apache-2.0 licensed and is a supported example of the kind of mod/package content the package system is designed to install.

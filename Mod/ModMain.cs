@@ -1,7 +1,8 @@
-using System;
 using ModLoader;
 using ModLoader.Helpers;
 using SFSEnhanced.Mod.Networking;
+using SFSEnhanced.Mod.Packaging;
+using SFSEnhanced.Mod.Social;
 using SFSEnhanced.Mod.UI;
 using SFSEnhanced.Mod.World;
 using UnityEngine;
@@ -15,14 +16,15 @@ namespace SFSEnhanced.Mod
 
         public override string ModNameID => ModId;
         public override string DisplayName => "SFS Enhanced";
-        public override string Author => "PalorderSoftWorksOfficial";
+        public override string Author => "SFS Enhanced";
         public override string MinimumGameVersionNecessary => "1.5";
-        public override string ModVersion => "0.1.1";
-        public override string Description => "";
+        public override string ModVersion => "0.1.0";
+        public override string Description => "Multiplayer platform, dedicated servers, shared worlds, multi-build sync, friends, claims, and expanded SFS systems.";
 
         public static ModMain Instance { get; private set; }
         public NetClient Client { get; private set; }
         public MultiBuildManager Builds { get; private set; }
+        public FriendsUI Friends { get; private set; }
         public MultiplayerMenu Menu { get; private set; }
 
         private GameObject _host;
@@ -30,46 +32,33 @@ namespace SFSEnhanced.Mod
         public override void Load()
         {
             Instance = this;
-            Debug.Log("[SFSEnhanced] Loading...");
+            Client = new NetClient();
+            Builds = new MultiBuildManager(Client);
+            Friends = new FriendsUI(Client);
+            Menu = new MultiplayerMenu(this);
+            PackageManager.Initialize(ModFolder.ToString());
 
-            try
-            {
-                Client = new NetClient();
-                Menu = new MultiplayerMenu(this);
+            _host = new GameObject("SFSEnhanced");
+            UnityEngine.Object.DontDestroyOnLoad(_host);
+            _host.AddComponent<ModLoop>().Bind(this);
 
-                _host = new GameObject("SFSEnhanced");
-                UnityEngine.Object.DontDestroyOnLoad(_host);
-                _host.AddComponent<ModLoop>().Bind(this);
-
-                SceneHelper.OnWorldSceneLoaded += OnWorldLoaded;
-                SceneHelper.OnWorldSceneUnloaded += OnWorldUnloaded;
-
-                try
-                {
-                    Builds = new MultiBuildManager(Client);
-                }
-                catch (Exception e)
-                {
-                    Debug.LogError($"[SFSEnhanced] Build synchronization disabled: {e}");
-                }
-
-                Debug.Log("[SFSEnhanced] Loaded successfully.");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[SFSEnhanced] Load failed: {e}");
-            }
+            SceneHelper.OnWorldSceneLoaded += new System.Action<Scene>(_ => OnWorldLoaded());
+            Debug.Log("[SFSEnhanced] Loaded. Multiplayer is available from the SFS main menu.");
         }
 
-        private void OnWorldLoaded(Scene scene)
+        private void OnWorldLoaded()
         {
-            Builds?.OnWorldSceneReady();
+            Builds.OnWorldSceneReady();
         }
 
-        private void OnWorldUnloaded(Scene scene)
+        public async void ConnectToServer(string host, int? port, string playerName)
         {
-            Builds?.ResetWorld();
-            Menu?.Hide();
+            ModSettings.Host = host;
+            if (port.HasValue) ModSettings.Port = port.Value;
+            ModSettings.PlayerName = playerName;
+            bool ok = await Client.ConnectAsync(host, port, playerName);
+            Debug.Log(ok ? $"[SFSEnhanced] Connected to {host} as {playerName}" : "[SFSEnhanced] Connection failed.");
+            if (ok) ServerHistory.Record(host, port, host);
         }
     }
 
@@ -77,22 +66,16 @@ namespace SFSEnhanced.Mod
     {
         private ModMain _mod;
 
-        public void Bind(ModMain mod)
-        {
-            _mod = mod;
-        }
+        public void Bind(ModMain mod) => _mod = mod;
 
         private void Update()
         {
             if (_mod == null) return;
-
             _mod.Client?.PumpIncoming();
-            _mod.Menu?.EnsureHomeButton();
+            _mod.Menu?.EnsurePlayButton();
             _mod.Builds?.TickInterpolation(Time.deltaTime);
             _mod.Builds?.TickLocalPublish(Time.deltaTime);
-
-            if (Input.GetKeyDown(KeyCode.F8))
-                _mod.Menu?.Toggle();
+            if (Input.GetKeyDown(KeyCode.F8)) _mod.Menu?.Toggle();
         }
     }
 }

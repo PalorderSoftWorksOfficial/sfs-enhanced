@@ -70,7 +70,8 @@ namespace SFSEnhanced.Server.Networking
                 ModVersion = _config.ModVersion,
                 Motd = _config.Motd,
                 MaxPlayers = _config.MaxPlayers,
-                PasswordProtected = _config.PasswordProtected
+                PasswordProtected = _config.PasswordProtected,
+                CertificateFingerprint = _config.CertificateFingerprint
             };
             var response = await PostAsync<ServerRegisterResponse>("/api/v1/servers/register", request).ConfigureAwait(false);
             if (response == null || string.IsNullOrWhiteSpace(response.ServerId) || string.IsNullOrWhiteSpace(response.HeartbeatToken))

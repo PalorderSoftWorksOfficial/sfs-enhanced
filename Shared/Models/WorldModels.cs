@@ -14,6 +14,9 @@ namespace SFSEnhanced.Shared.Models
         public string PlanetPackId;
         public DateTime CreatedUtc = DateTime.UtcNow;
         public DateTime LastModifiedUtc = DateTime.UtcNow;
+        public double WorldTime;
+        public double TimewarpMultiplier = 1.0;
+        public DateTime WorldTimeUpdatedUtc = DateTime.UtcNow;
 
         /// <summary>Every build (rocket/base/rover/station) currently in this world.</summary>
         public List<BuildSnapshot> Builds = new List<BuildSnapshot>();
