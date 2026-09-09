@@ -36,6 +36,7 @@ namespace SFSEnhanced.Shared.Protocol
         BuildOwnershipTransfer = 33,
         BuildControlRequest = 34, // "let me pilot this" — server arbitrates conflicts
         BuildControlGrant = 35,
+        WorldTimeState = 36,
 
         // --- Time control ---
         TimeWarpRequest = 40,   // client asking to warp; server may deny if others are nearby

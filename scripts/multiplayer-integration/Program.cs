@@ -21,9 +21,14 @@ static async Task<(PacketType Type, string Json)> ReceiveAsync(SslStream stream,
 
 static async Task<T> ReceiveTypeAsync<T>(SslStream stream, PacketType expected)
 {
-    var packet = await ReceiveAsync(stream);
-    if (packet.Type != expected) throw new InvalidOperationException($"Expected {expected}, got {packet.Type}: {packet.Json}");
-    return JsonConvert.DeserializeObject<T>(packet.Json) ?? throw new InvalidOperationException($"Invalid {expected} payload.");
+    for (int i = 0; i < 32; i++)
+    {
+        var packet = await ReceiveAsync(stream);
+        if (packet.Type == PacketType.WorldTimeState) continue;
+        if (packet.Type != expected) throw new InvalidOperationException($"Expected {expected}, got {packet.Type}: {packet.Json}");
+        return JsonConvert.DeserializeObject<T>(packet.Json) ?? throw new InvalidOperationException($"Invalid {expected} payload.");
+    }
+    throw new TimeoutException($"Could not receive {expected} because the stream contained only time-sync packets.");
 }
 
 static async Task TestUnauthenticatedAccessAsync()

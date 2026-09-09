@@ -32,8 +32,8 @@ The project is designed around the native SFS modding APIs and a clean separatio
 | SRV endpoint resolution | Implemented |
 | TLS transport | Implemented |
 | Persistent authentication | Implemented |
-| Shared worlds | Implemented foundation |
-| Multi-build synchronization | Implemented foundation |
+| Shared worlds | Implemented with authoritative world clock |
+| Multi-build synchronization | Live state replication and interpolation |
 | Friends and invites | Implemented foundation |
 | Claims | Implemented foundation |
 | Chat | Implemented foundation |
@@ -132,7 +132,7 @@ Code is only incorporated where its license permits the intended reuse, and reus
 
 ## Feature roadmap
 
-The long-term goal is to consolidate useful capabilities from the referenced SFS ecosystem into one coherent project instead of producing a collection of disconnected menus and systems.
+Live multiplayer synchronization now includes server-owned world time, remote rocket ghosting, 15 Hz state publishing, interpolation, and server-side numeric validation. The long-term goal is to consolidate useful capabilities from the referenced SFS ecosystem into one coherent project instead of producing a collection of disconnected menus and systems.
 
 Planned modules include:
 
@@ -194,7 +194,7 @@ Example manifest:
 }
 ```
 
-The installer validates package IDs and paths, rejects path traversal, creates backups when existing files are replaced, tracks installed packages, and can restore files during package removal.
+The installer resolves package targets against the actual SFS game root, validates package IDs and paths, rejects path traversal, enforces minimum SFS Enhanced and dependency versions, creates backups when existing files are replaced, tracks installed packages, supports wrapper-directory archives, and can restore files during package removal.
 
 ## Upstream implementation references
 

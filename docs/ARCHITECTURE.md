@@ -106,3 +106,21 @@ The server does not assume an SFS installation directory, Windows registry,
 Windows services, or Linux-specific APIs. Linux service management is supplied
 through systemd, while Windows hosts can run the same executable directly or
 wrap it in their normal Windows service tooling.
+
+## Live multiplayer synchronization
+
+The current multiplayer path follows the useful separation used by the SFSPlayer multiplayer implementation: reliable lifecycle packets carry world membership and rocket snapshots, while frequent state packets carry position, velocity, rotation, throttle metadata, world time, and a monotonically increasing tick.
+
+Remote rockets are loaded through SFS's own `RocketManager.LoadRocket` and immediately converted into non-player ghost rockets. `RemoteRocketGhost` disables their physics simulation and colliders every frame, while `MultiBuildManager` interpolates them toward server-relayed state.
+
+The dedicated server owns the shared world clock. It advances `WorldRecord.WorldTime` from wall-clock time and the authoritative time-warp multiplier, broadcasts `WorldTimeState`, and rejects client attempts to advance the clock directly. Clients continuously correct local SFS world time and time-warp state toward that server clock.
+
+The server still does not simulate full SFS physics. It validates numeric state, build ownership, claims, and world membership, then relays accepted state. This keeps the SFS client physics engine responsible for local flight while preventing remote rockets from becoming independent physics bodies.
+
+## UI architecture reference
+
+The multiplayer UI uses SFS `ScreenManager`, `BasicMenu`, and `SFS.UI.ModGUI.Builder` instead of a separate overlay framework. The reusable UI architecture is informed by cucumber-sp/UITools: page-oriented windows, reusable controls, persistent settings concepts, and explicit lifecycle handling. UITools source is not copied because the inspected repository did not expose a license file.
+
+## Package installation boundary
+
+Packages are resolved relative to the actual SFS game root, not the mod directory. A mod installed at `Mods/SFS Enhanced` therefore maps a package target such as `Mods/Example/example.dll` to the game's `Mods/Example/example.dll`. Package manifests can declare minimum SFS Enhanced versions and minimum dependency versions, and archives may contain a single wrapper directory around `package.json`.

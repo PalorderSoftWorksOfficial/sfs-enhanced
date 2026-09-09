@@ -14,6 +14,7 @@ namespace SFSEnhanced.Mod.Packaging
         private const string InstalledDirectoryName = "installed";
         private const string ManifestName = "package.json";
         private const string BackupDirectoryName = ".sfs-enhanced-backups";
+        private const string CurrentSfsEnhancedVersion = "0.1.0";
         private static string _gameRoot;
         private static string _modFolder;
 
@@ -23,7 +24,8 @@ namespace SFSEnhanced.Mod.Packaging
         public static void Initialize(string modFolder)
         {
             _modFolder = Path.GetFullPath(modFolder);
-            _gameRoot = Directory.GetParent(_modFolder).FullName;
+            var modsRoot = Directory.GetParent(_modFolder);
+            _gameRoot = modsRoot != null && modsRoot.Parent != null ? modsRoot.Parent.FullName : Directory.GetParent(_modFolder).FullName;
             PackagesDirectory = Path.Combine(_modFolder, PackageDirectoryName);
             InstalledDirectory = Path.Combine(PackagesDirectory, InstalledDirectoryName);
             Directory.CreateDirectory(PackagesDirectory);
@@ -88,9 +90,14 @@ namespace SFSEnhanced.Mod.Packaging
         private static PackageManifest LoadManifest(string staging, string archive)
         {
             string manifestPath = Path.Combine(staging, ManifestName);
+            if (!File.Exists(manifestPath))
+            {
+                var wrapper = Directory.GetDirectories(staging, "*", SearchOption.TopDirectoryOnly).FirstOrDefault(d => File.Exists(Path.Combine(d, ManifestName)));
+                if (wrapper != null) return LoadManifestFromWrapper(wrapper, archive);
+            }
             if (File.Exists(manifestPath)) return JsonConvert.DeserializeObject<PackageManifest>(File.ReadAllText(manifestPath));
             string id = SanitizeId(Path.GetFileNameWithoutExtension(archive));
-            var manifest = new PackageManifest { Id = id, Name = id, Version = "0.0.0", Author = "Unknown", Description = "Legacy package", Files = new List<PackageFile>() };
+            var legacy = new PackageManifest { Id = id, Name = id, Version = "0.0.0", Author = "Unknown", Description = "Legacy package", Files = new List<PackageFile>() };
             foreach (string root in new[] { "Mods", "Saving", "Resources", "StreamingAssets", "UserData" })
             {
                 string path = Path.Combine(staging, root);
@@ -98,10 +105,18 @@ namespace SFSEnhanced.Mod.Packaging
                 foreach (string file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
                 {
                     string relative = file.Substring(staging.Length + 1).Replace(Path.DirectorySeparatorChar, '/');
-                    manifest.Files.Add(new PackageFile { Source = relative, Target = relative });
+                    legacy.Files.Add(new PackageFile { Source = relative, Target = relative });
                 }
             }
-            if (manifest.Files.Count == 0) throw new InvalidDataException("Missing package.json and no supported package folders were found.");
+            if (legacy.Files.Count == 0) throw new InvalidDataException("Missing package.json and no supported package folders were found.");
+            return legacy;
+        }
+
+        private static PackageManifest LoadManifestFromWrapper(string wrapper, string archive)
+        {
+            var manifest = JsonConvert.DeserializeObject<PackageManifest>(File.ReadAllText(Path.Combine(wrapper, ManifestName)));
+            if (manifest == null) throw new InvalidDataException("Invalid package manifest.");
+            foreach (var file in manifest.Files ?? new List<PackageFile>()) file.Source = Path.Combine(Path.GetFileName(wrapper), file.Source).Replace(Path.DirectorySeparatorChar, '/');
             return manifest;
         }
 
@@ -110,12 +125,21 @@ namespace SFSEnhanced.Mod.Packaging
             if (manifest == null || string.IsNullOrWhiteSpace(manifest.Id)) throw new InvalidDataException("Invalid package manifest.");
             if (!IsSafeId(manifest.Id)) throw new InvalidDataException("Invalid package id.");
             if (string.IsNullOrWhiteSpace(manifest.Version) || !Version.TryParse(manifest.Version, out _)) throw new InvalidDataException("Invalid package version.");
-            if (!string.IsNullOrWhiteSpace(manifest.MinimumSfsEnhancedVersion) && !Version.TryParse(manifest.MinimumSfsEnhancedVersion, out _)) throw new InvalidDataException("Invalid MinimumSfsEnhancedVersion.");
+            if (!string.IsNullOrWhiteSpace(manifest.MinimumSfsEnhancedVersion) && (!Version.TryParse(manifest.MinimumSfsEnhancedVersion, out var minimum) || minimum > Version.Parse(CurrentSfsEnhancedVersion))) throw new InvalidDataException("This package requires a newer SFS Enhanced version.");
             foreach (var dependency in manifest.Dependencies ?? new List<PackageDependency>())
-                if (!IsInstalled(dependency.Id)) throw new InvalidDataException($"Missing package dependency '{dependency.Id}'.");
+            {
+                if (dependency == null || !IsSafeId(dependency.Id) || !IsInstalled(dependency.Id)) throw new InvalidDataException($"Missing package dependency '{dependency?.Id}'.");
+                if (!string.IsNullOrWhiteSpace(dependency.MinimumVersion) && (!Version.TryParse(dependency.MinimumVersion, out var dependencyMinimum) || GetInstalledVersion(dependency.Id) < dependencyMinimum)) throw new InvalidDataException($"Package dependency '{dependency.Id}' is too old.");
+            }
         }
 
         private static bool IsInstalled(string id) => IsSafeId(id) && File.Exists(Path.Combine(InstalledDirectory, id, ManifestName));
+
+        private static Version GetInstalledVersion(string id)
+        {
+            var manifest = JsonConvert.DeserializeObject<PackageManifest>(File.ReadAllText(Path.Combine(InstalledDirectory, id, ManifestName)));
+            return Version.TryParse(manifest?.Version, out var version) ? version : new Version(0, 0, 0);
+        }
 
         private static void InstallFile(string staging, string backupRoot, PackageFile file)
         {
@@ -137,7 +161,7 @@ namespace SFSEnhanced.Mod.Packaging
         {
             target = target.Replace('/', Path.DirectorySeparatorChar).TrimStart(Path.DirectorySeparatorChar);
             string first = target.Split(Path.DirectorySeparatorChar)[0];
-            if (!new[] { "Mods", "Saving", "Resources", "StreamingAssets", "UserData" }.Any(x => string.Equals(x, first, StringComparison.OrdinalIgnoreCase))) throw new InvalidDataException($"Unsupported package target root '{first}'.");
+            if (!new[] { "Mods", "Saving", "Resources", "StreamingAssets", "UserData" }.Contains(first, StringComparer.OrdinalIgnoreCase)) throw new InvalidDataException($"Unsupported package target root '{first}'.");
             return GetSafePath(_gameRoot, target);
         }
 

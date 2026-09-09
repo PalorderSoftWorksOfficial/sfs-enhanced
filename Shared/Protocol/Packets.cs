@@ -138,12 +138,22 @@ namespace SFSEnhanced.Shared.Protocol
         public string PlanetAddress;
         public double? ThrottlePercent;
         public int? StagingIndex;
+        public double WorldTime;
+        public long Tick;
     }
 
     public class BuildControlRequestPacket
     {
         public string WorldId;
         public string BuildId;
+    }
+
+    public class WorldTimeStatePacket
+    {
+        public string WorldId;
+        public double WorldTime;
+        public double TimewarpMultiplier;
+        public long Tick;
     }
 
     public class BuildControlGrantPacket
