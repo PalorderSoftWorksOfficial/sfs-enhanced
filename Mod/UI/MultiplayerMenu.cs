@@ -543,7 +543,6 @@ namespace SFSEnhanced.Mod.UI
             if (server == null || string.IsNullOrWhiteSpace(server.Host)) return;
             _host = server.Host;
             _port = server.Port.ToString();
-            if (!string.IsNullOrWhiteSpace(server.CertificateFingerprint)) ModSettings.SetServerCertificateFingerprint(server.Host, server.CertificateFingerprint);
             _mod.ConnectToServer(server.Host, server.Port, _playerName);
             SetStatus($"Connecting to {server.Name}...");
         }
@@ -636,9 +635,9 @@ namespace SFSEnhanced.Mod.UI
         {
             switch (type)
             {
-                case PacketType.HelloAck:
-                    var hello = Newtonsoft.Json.JsonConvert.DeserializeObject<HelloAckPacket>(json);
-                    SetStatus(hello.Accepted ? $"Online as {hello.PlayerId}" : $"Rejected: {hello.RejectReason}");
+                case PacketType.AuthResult:
+                    var hello = Newtonsoft.Json.JsonConvert.DeserializeObject<AuthResultPacket>(json);
+                    if (hello != null && hello.Accepted) SetStatus($"Online as {_mod.Client.PlayerId}");
                     break;
                 case PacketType.WorldJoinAck:
                     var join = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(json);

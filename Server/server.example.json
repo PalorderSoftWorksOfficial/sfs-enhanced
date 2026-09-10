@@ -10,5 +10,6 @@
   "Region": "eu-central",
   "GameVersion": "1.5+",
   "ModVersion": "0.1.0",
-  "PasswordProtected": false
+  "PasswordProtected": false,
+  "Transport": "LidgrenUdp"
 }

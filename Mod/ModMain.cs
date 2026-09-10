@@ -5,6 +5,7 @@ using SFSEnhanced.Mod.Packaging;
 using SFSEnhanced.Mod.Social;
 using SFSEnhanced.Mod.UI;
 using SFSEnhanced.Mod.World;
+using SFSEnhanced.Mod.Integrated;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -33,6 +34,7 @@ namespace SFSEnhanced.Mod
         public override void Load()
         {
             Instance = this;
+            VanillaUpgradesIntegration.Initialize();
             Client = new NetClient();
             Builds = new MultiBuildManager(Client);
             RocketFleet = new LocalRocketFleetSync(Client);

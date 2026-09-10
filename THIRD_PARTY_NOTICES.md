@@ -58,6 +58,12 @@ Repository: https://github.com/cucumber-sp/UITools
 
 The repository describes UITools as a reusable SFS UI dependency and provides builders, closable windows, position persistence, numeric inputs, and button helpers. No license file was exposed in the repository tree inspected for this project. SFS Enhanced therefore uses its public API concepts and UI architecture as inspiration rather than copying the repository wholesale.
 
+## Lidgren Network
+
+Library: AscensionGameDev.Lidgren.Network (NuGet), upstream https://github.com/lidgren/lidgren-network-gen3
+
+License: MIT. Used as the UDP transport under both the dedicated server and the game mod. The MIT license text is reproduced in the packages consumed from NuGet; SFS Enhanced claims no authorship of Lidgren.
+
 ## 105-Code MorePartsMod
 
 Repository: https://github.com/105-Code/MorePartsMod
@@ -65,6 +71,12 @@ Repository: https://github.com/105-Code/MorePartsMod
 License: Apache-2.0.
 
 MorePartsMod is an example of the type of SFS mod package that SFS Enhanced's package installer is designed to consume. Its code is not bundled into SFS Enhanced.
+
+## Neptune-Sky SFSVanillaUpgrades
+
+Repository: https://github.com/Neptune-Sky/SFSVanillaUpgrades
+
+The upstream README requests credit for reused code. SFS Enhanced integrates independently adapted Vanilla Upgrades functionality and credits NeptuneSky for the upstream implementation and feature design. The integrated layer currently covers extended camera limits, extended offline physics timewarp, accurate TWR, extended units, throttle display accuracy, and torque control.
 
 SFSPlayer-sys/Spaceflight-Simulator-MultiplayerMod
 The archived multiplayer project is GPL-3.0. SFS Enhanced uses its stable multiplayer architecture and packet/lifecycle concepts as a reference and adapts compatible portions under the project GPL-3.0 licensing.

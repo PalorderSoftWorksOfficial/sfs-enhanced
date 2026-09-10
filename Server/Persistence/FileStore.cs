@@ -63,6 +63,8 @@ namespace SFSEnhanced.Server.Persistence
             }
         }
 
+        public void EnsureFolder(string folder) => Directory.CreateDirectory(Path.Combine(_root, folder));
+
         public string[] ListIds(string folder)
         {
             string dir = Path.Combine(_root, folder);

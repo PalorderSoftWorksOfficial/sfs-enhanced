@@ -7,18 +7,52 @@ namespace SFSEnhanced.Shared.Protocol
 
     public class HelloPacket
     {
-        public string ProtocolVersion = "1.0";
+        public const string ProtocolVersion2 = "2.0";
+        public const string ModeToken = "token";
+        public const string ModeRegister = "register";
+
+        public string ProtocolVersion = ProtocolVersion2;
         public string PlayerName;
-        public string AuthToken;      // opaque token from a prior session, or null for a first-time login
         public string ClientModVersion;
+        public byte[] ClientNonce;
+        public string Mode = ModeToken;
     }
 
     public class HelloAckPacket
     {
         public bool Accepted;
         public string RejectReason;
+        public byte[] ServerChallenge;
+        public byte[] ClientNonce;
+        public byte[] ExchangeIdentifier;
+    }
+
+    public class AuthChallengePacket
+    {
+        public byte[] EphemeralX;
+        public byte[] EphemeralY;
+        public byte[] StaticX;
+        public byte[] StaticY;
+        public string IdentityFingerprint;
+        public byte[] ExchangeIdentifier;
+        public bool FinalFlag;
+    }
+
+    public class AuthResponsePacket
+    {
+        public byte[] EphemeralX;
+        public byte[] EphemeralY;
+        public byte[] Proof;
+        public byte[] RegistrationSecret;
+    }
+
+    public class AuthResultPacket
+    {
+        public bool Accepted;
+        public string RejectReason;
         public string PlayerId;
-        public string AuthToken;      // issued token, save it and send back next time
+        public string AuthToken;
+        public byte[] SessionId;
     }
 
     public class DisconnectPacket
@@ -336,6 +370,11 @@ namespace SFSEnhanced.Shared.Protocol
     // ---- Errors ----
 
     public class ErrorPacket
+    {
+        public string Message;
+    }
+
+    public class AuthErrorPacket
     {
         public string Message;
     }

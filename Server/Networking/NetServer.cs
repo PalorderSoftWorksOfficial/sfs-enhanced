@@ -3,10 +3,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
-using System.Security.Authentication;
-using System.Security.Cryptography.X509Certificates;
-using System.Net.Security;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,7 +17,6 @@ namespace SFSEnhanced.Server.Networking
     public class NetServer
     {
         private readonly ServerConfig _config;
-        private readonly X509Certificate2 _certificate;
         private readonly AccountService _accounts;
         private readonly WorldManager _worlds;
         private readonly FriendsService _friends;
@@ -33,9 +28,8 @@ namespace SFSEnhanced.Server.Networking
 
         public int ConnectedPlayerCount => _connections.Count;
 
-        public NetServer(ServerConfig config, X509Certificate2 certificate, AccountService accounts, WorldManager worlds, FriendsService friends, ClaimsService claims)
+        public NetServer(ServerConfig config, AccountService accounts, WorldManager worlds, FriendsService friends, ClaimsService claims)
         {
-            _certificate = certificate;
             _config = config;
             _accounts = accounts;
             _worlds = worlds;
@@ -45,25 +39,19 @@ namespace SFSEnhanced.Server.Networking
 
         public async Task RunAsync(CancellationToken ct)
         {
-            var listener = new TcpListener(IPAddress.Any, _config.Port);
-            listener.Start();
+            SecureSessionHandshake.InitializeStaticKey(new FileStore(_config.DataDir));
+            var transport = new LidgrenServerTransport(_config.Port, _config.MaxPlayers);
+            transport.ConnectionAccepted += session => _ = HandleClientAsync(session, ct);
             var autosave = AutosaveLoopAsync(ct);
             var worldTime = WorldTimeLoopAsync(ct);
-
             try
             {
-                while (!ct.IsCancellationRequested)
-                {
-                    var acceptTask = listener.AcceptTcpClientAsync();
-                    var completed = await Task.WhenAny(acceptTask, Task.Delay(Timeout.Infinite, ct)).ConfigureAwait(false);
-                    if (completed != acceptTask) break;
-                    _ = HandleClientAsync(acceptTask.Result, ct);
-                }
+                await transport.StartAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { }
             finally
             {
-                listener.Stop();
+                transport.Stop();
                 _worlds.PersistAll();
                 await autosave;
                 await worldTime;
@@ -113,41 +101,41 @@ namespace SFSEnhanced.Server.Networking
             catch (OperationCanceledException) { }
         }
 
-        private async Task HandleClientAsync(TcpClient tcpClient, CancellationToken ct)
+        private async Task HandleClientAsync(LidgrenServerConnection transport, CancellationToken ct)
         {
-            var conn = new ClientConnection(tcpClient);
-            var ssl = new SslStream(conn.Stream, false);
-            await ssl.AuthenticateAsServerAsync(_certificate, false, SslProtocols.Tls12 | SslProtocols.Tls13, true);
-            conn.SetStream(ssl);
+            var conn = new ClientConnection(transport);
             string playerId = null;
 
             try
             {
+                var handshake = new SecureSessionHandshake();
+                PlayerAccount account = await handshake.AuthenticateAsync(conn, _accounts, _config, ct).ConfigureAwait(false);
+                if (account == null)
+                {
+                    Console.WriteLine("[auth-failed] handshake rejected");
+                    return;
+                }
+                playerId = account.PlayerId;
+                _accounts.Touch(account);
+
+                if (!_connections.ContainsKey(account.PlayerId) && _connections.Count >= _config.MaxPlayers)
+                {
+                    await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Server is full." });
+                    return;
+                }
+                if (_connections.TryGetValue(account.PlayerId, out ClientConnection oldConnection) && !ReferenceEquals(oldConnection, conn))
+                    oldConnection.Close();
+                _connections[account.PlayerId] = conn;
+                _friends.SetOnline(account.PlayerId, true);
+                Console.WriteLine($"[connect] {account.PlayerName} ({account.PlayerId})");
+
                 while (!ct.IsCancellationRequested)
                 {
-                    var (type, json) = await NetMessage.ReadRawAsync(conn.Stream);
-                    if (type == PacketType.Disconnect && json == null) break;
-
-                    if (type != PacketType.Hello && type != PacketType.Ping && playerId == null)
-                    {
-                        await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Authentication is required before this packet." });
-                        continue;
-                    }
-
-                    if (type == PacketType.Hello && playerId != null)
-                    {
-                        await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "This connection is already authenticated." });
-                        continue;
-                    }
+                    var (ok, type, json) = await conn.ReceiveSecureAsync(ct).ConfigureAwait(false);
+                    if (!ok) break;
 
                     switch (type)
                     {
-                        case PacketType.Hello:
-                            playerId = await HandleHello(conn, Deserialize<HelloPacket>(json));
-                            break;
-                        case PacketType.Ping:
-                            await conn.SendAsync(PacketType.Pong, null);
-                            break;
                         case PacketType.Disconnect:
                             return;
                         case PacketType.ServerInfoRequest:
@@ -264,62 +252,6 @@ namespace SFSEnhanced.Server.Networking
                 }
                 conn.Close();
             }
-        }
-
-        private async Task<string> HandleHello(ClientConnection conn, HelloPacket hello)
-        {
-            if (hello == null || string.IsNullOrWhiteSpace(hello.PlayerName))
-            {
-                await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "A player name is required." });
-                return null;
-            }
-
-            if (!string.Equals(hello.ProtocolVersion, "1.0", StringComparison.Ordinal))
-            {
-                await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "Unsupported protocol version." });
-                return null;
-            }
-
-            PlayerAccount account = null;
-            if (!string.IsNullOrEmpty(hello.AuthToken))
-            {
-                var byName = _accounts.FindByName(hello.PlayerName);
-                if (byName != null && _accounts.ValidateToken(byName, hello.AuthToken)) account = byName;
-            }
-
-            string issuedToken = null;
-            if (account == null)
-            {
-                if (_accounts.FindByName(hello.PlayerName) != null)
-                {
-                    await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "That name is taken and the auth token did not match." });
-                    return null;
-                }
-                if (_connections.Count >= _config.MaxPlayers)
-                {
-                    await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "Server is full." });
-                    return null;
-                }
-                var created = _accounts.CreateAccount(hello.PlayerName);
-                account = created.account;
-                issuedToken = created.plainToken;
-            }
-
-            if (_connections.TryGetValue(account.PlayerId, out var oldConnection) && !ReferenceEquals(oldConnection, conn))
-                oldConnection.Close();
-            else if (!_connections.ContainsKey(account.PlayerId) && _connections.Count >= _config.MaxPlayers)
-            {
-                await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = false, RejectReason = "Server is full." });
-                return null;
-            }
-
-            conn.Account = account;
-            _accounts.Touch(account);
-            _connections[account.PlayerId] = conn;
-            _friends.SetOnline(account.PlayerId, true);
-            await conn.SendAsync(PacketType.HelloAck, new HelloAckPacket { Accepted = true, PlayerId = account.PlayerId, AuthToken = issuedToken });
-            Console.WriteLine($"[connect] {account.PlayerName} ({account.PlayerId})");
-            return account.PlayerId;
         }
 
         private async Task HandleWorldCreate(ClientConnection conn, string playerId, WorldCreatePacket req)

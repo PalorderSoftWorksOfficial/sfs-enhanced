@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using SFS.Parsers.Json;
+using SFS.Parts.Modules;
 using SFS.World;
 using SFSEnhanced.Mod.Networking;
 using SFSEnhanced.Shared.Protocol;
@@ -119,6 +120,8 @@ namespace SFSEnhanced.Mod.World
                 WorldId = _client.CurrentWorldId,
                 BuildId = id,
                 ThrottlePercent = rocket.throttle.throttlePercent.Value,
+                RcsEnabled = rocket.arrowkeys != null && rocket.arrowkeys.rcs.Value,
+                EnginesEnabled = rocket.partHolder != null && rocket.partHolder.GetModules<EngineModule>().Any(engine => engine.engineOn.Value),
                 Tick = _tick
             });
         }

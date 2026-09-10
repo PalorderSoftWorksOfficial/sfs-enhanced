@@ -7,11 +7,14 @@ namespace SFSEnhanced.Shared.Protocol
     public enum PacketType : byte
     {
         // --- Connection lifecycle ---
-        Hello = 0,              // C->S: client version + player name handshake
-        HelloAck = 1,           // S->C: accepted, assigns PlayerId
+        Hello = 0,              // C->S: player name + session introduction (cleartext)
+        HelloAck = 1,           // S->C: challenge issued, or rejection
         Disconnect = 2,         // either way: clean disconnect with reason
         Ping = 3,
         Pong = 4,
+        AuthChallenge = 5,      // S->C: server challenge + client nonce (cleartext)
+        AuthResponse = 6,       // C->S: HMAC proof over challenge, sealed with registration secret when claiming a name
+        AuthResult = 7,         // S->C: session established (from here everything is sealed)
 
         // --- Server / world discovery ---
         ServerInfoRequest = 10, // C->S
@@ -68,5 +71,6 @@ namespace SFSEnhanced.Shared.Protocol
         ChatMessage = 70,
 
         Error = 255,
+        AuthError = 254,
     }
 }

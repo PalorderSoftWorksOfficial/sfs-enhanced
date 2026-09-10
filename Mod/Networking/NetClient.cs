@@ -1,33 +1,30 @@
 using System;
 using System.Collections.Concurrent;
-using System.IO;
-using System.Net.Sockets;
-using System.Net.Security;
-using System.Security.Authentication;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using Lidgren.Network;
 using SFSEnhanced.Shared.Protocol;
+using LidgrenClient = Lidgren.Network.NetClient;
 
 namespace SFSEnhanced.Mod.Networking
 {
     public class NetClient
     {
-        private TcpClient _tcp;
-        private Stream _stream;
+        private const string AppIdentifier = "SFS-Enhanced-Multiplayer";
+        private LidgrenClient _peer;
+        private NetConnection _connection;
         private CancellationTokenSource _cts;
-        private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
+        private TaskCompletionSource<bool> _connectTcs;
         private int _connectionGeneration;
         private volatile bool _connected;
+        private SecureChannel _channel;
+        private BlockingCollection<RawFrame> _pendingFrames = new BlockingCollection<RawFrame>();
+        private readonly ConcurrentQueue<(PacketType type, string json)> _incoming = new();
 
         public string PlayerId { get; private set; }
         public string AuthToken { get; private set; }
         public string CurrentWorldId { get; private set; }
         public bool IsConnected => _connected;
-
-        private readonly ConcurrentQueue<(PacketType type, string json)> _incoming = new ConcurrentQueue<(PacketType type, string json)>();
-
         public event Action<PacketType, string> OnPacket;
 
         public NetClient()
@@ -37,35 +34,45 @@ namespace SFSEnhanced.Mod.Networking
 
         public Task<bool> ConnectAsync(string host, int port, string playerName) => ConnectAsync(host, (int?)port, playerName);
 
-        public async Task<bool> ConnectAsync(string host, int? port, string playerName)
+        public async Task<bool> ConnectAsync(string host, int? port, string playerName, string registrationPassword = null)
         {
             Disconnect();
-
             try
             {
-                var generation = Interlocked.Increment(ref _connectionGeneration);
-                var endpoint = await ServerEndpointResolver.ResolveAsync(host, port).ConfigureAwait(false);
-                var tcp = new TcpClient();
-                await tcp.ConnectAsync(endpoint.Host, endpoint.Port).ConfigureAwait(false);
-                var stream = new SslStream(tcp.GetStream(), false, (sender, certificate, chain, errors) => ValidateServerCertificate(host, certificate, chain, errors));
-                await stream.AuthenticateAsClientAsync(endpoint.Host, null, SslProtocols.Tls12, false).ConfigureAwait(false);
-                var fingerprint = GetFingerprint(stream.RemoteCertificate);
-                if (string.IsNullOrWhiteSpace(ModSettings.GetServerCertificateFingerprint(host)))
-                    ModSettings.SetServerCertificateFingerprint(host, fingerprint);
-                var cts = new CancellationTokenSource();
-                _tcp = tcp;
-                _stream = stream;
-                _cts = cts;
-                _connected = true;
-
-                await SendAsync(PacketType.Hello, new HelloPacket
+                int generation = Interlocked.Increment(ref _connectionGeneration);
+                ServerEndpoint endpoint = await ServerEndpointResolver.ResolveAsync(host, port).ConfigureAwait(false);
+                var config = new NetPeerConfiguration(AppIdentifier)
                 {
-                    PlayerName = playerName,
-                    AuthToken = AuthToken,
-                    ClientModVersion = "0.1.0",
-                });
+                    ConnectionTimeout = 15f,
+                    PingInterval = 4f,
+                    MaximumConnections = 1
+                };
+                config.EnableMessageType(NetIncomingMessageType.StatusChanged);
+                config.EnableMessageType(NetIncomingMessageType.Data);
+                _peer = new LidgrenClient(config);
+                _peer.Start();
+                _cts = new CancellationTokenSource();
+                _pendingFrames = new BlockingCollection<RawFrame>();
+                _connectTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _connection = _peer.Connect(endpoint.Host, endpoint.Port);
+                var pump = PumpAsync(generation, _cts.Token);
+                if (await Task.WhenAny(_connectTcs.Task, Task.Delay(TimeSpan.FromSeconds(12))).ConfigureAwait(false) != _connectTcs.Task)
+                    throw new TimeoutException("Timed out connecting to the multiplayer server.");
+                if (!await _connectTcs.Task.ConfigureAwait(false)) throw new InvalidOperationException("The multiplayer transport rejected the connection.");
 
-                _ = ReadLoopAsync(stream, cts.Token, generation);
+                var handshake = new SecureHandshakeClient(new LidgrenSecureTransport(this));
+                SecureHandshakeResult result = await handshake.RunAsync(playerName, AuthToken, "0.1.0", registrationPassword, _cts.Token).ConfigureAwait(false);
+                if (!result.Accepted) throw new InvalidOperationException(result.RejectReason ?? "Authentication failed.");
+
+                _channel = result.Channel;
+                PlayerId = result.PlayerId;
+                if (!string.IsNullOrEmpty(result.IssuedToken))
+                {
+                    AuthToken = result.IssuedToken;
+                    SFSEnhanced.Mod.ModSettings.AuthToken = result.IssuedToken;
+                }
+                _connected = true;
+                _ = ConsumeFramesAsync(generation, _cts.Token);
                 return true;
             }
             catch (Exception e)
@@ -76,32 +83,23 @@ namespace SFSEnhanced.Mod.Networking
             }
         }
 
-        private static bool ValidateServerCertificate(string host, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
-        {
-            if (certificate == null) return false;
-            string fingerprint = GetFingerprint(certificate);
-            string pinned = ModSettings.GetServerCertificateFingerprint(host);
-            return string.IsNullOrWhiteSpace(pinned) || string.Equals(pinned, fingerprint, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string GetFingerprint(X509Certificate certificate)
-        {
-            using var sha = SHA256.Create();
-            return BitConverter.ToString(sha.ComputeHash(certificate.GetRawCertData())).Replace("-", string.Empty);
-        }
-
         public void Disconnect()
         {
             Interlocked.Increment(ref _connectionGeneration);
             _connected = false;
             CurrentWorldId = null;
+            PlayerId = null;
+            _channel = null;
+            _connectTcs?.TrySetResult(false);
+            try { _connection?.Disconnect("client disconnect"); } catch { }
+            try { _peer?.Shutdown("client disconnect"); } catch { }
+            _connection = null;
+            _peer = null;
             _cts?.Cancel();
-            try { _stream?.Dispose(); } catch { }
-            try { _tcp?.Close(); } catch { }
-            _stream = null;
-            _tcp = null;
             _cts = null;
+            _pendingFrames.CompleteAdding();
             while (_incoming.TryDequeue(out _)) { }
+            while (_pendingFrames.TryTake(out _)) { }
         }
 
         public async Task LeaveWorldAsync()
@@ -111,48 +109,36 @@ namespace SFSEnhanced.Mod.Networking
             CurrentWorldId = null;
         }
 
-        public async Task SendAsync(PacketType type, object payload)
+        public Task SendAsync(PacketType type, object payload)
         {
-            var stream = _stream;
-            if (stream == null || !IsConnected) return;
-            await _writeLock.WaitAsync();
+            LidgrenClient peer = _peer;
+            NetConnection connection = _connection;
+            SecureChannel channel = _channel;
+            if (peer == null || connection == null || !_connected || channel == null) return Task.CompletedTask;
             try
             {
-                if (!IsConnected || !ReferenceEquals(stream, _stream)) return;
-                await NetMessage.WriteAsync(stream, type, payload);
+                byte[] sealedBytes = channel.Seal(type, payload);
+                byte[] framed = SecureFrame.Wrap(new RawFrame { IsSealed = true, Data = sealedBytes });
+                var message = peer.CreateMessage(framed.Length);
+                message.Write(framed);
+                NetDeliveryMethod method = LidgrenWire.IsHotStream(type) ? NetDeliveryMethod.UnreliableSequenced : NetDeliveryMethod.ReliableOrdered;
+                peer.SendMessage(message, connection, method, LidgrenWire.GetChannel(type));
             }
             catch (Exception e)
             {
                 UnityEngine.Debug.LogWarning($"[SFSEnhanced] Send failed ({type}): {e.Message}");
-                Disconnect();
             }
-            finally
-            {
-                _writeLock.Release();
-            }
+            return Task.CompletedTask;
         }
 
         public void PumpIncoming()
         {
             while (_incoming.TryDequeue(out var item))
             {
-                try
-                {
-                    HandlePacket(item.type, item.json);
-                }
-                catch (Exception e)
-                {
-                    UnityEngine.Debug.LogError($"[SFSEnhanced] Packet handling failed ({item.type}): {e}");
-                }
-
-                try
-                {
-                    OnPacket?.Invoke(item.type, item.json);
-                }
-                catch (Exception e)
-                {
-                    UnityEngine.Debug.LogError($"[SFSEnhanced] Packet listener failed ({item.type}): {e}");
-                }
+                try { HandlePacket(item.type, item.json); }
+                catch (Exception e) { UnityEngine.Debug.LogError($"[SFSEnhanced] Packet handling failed ({item.type}): {e}"); }
+                try { OnPacket?.Invoke(item.type, item.json); }
+                catch (Exception e) { UnityEngine.Debug.LogError($"[SFSEnhanced] Packet listener failed ({item.type}): {e}"); }
             }
         }
 
@@ -160,47 +146,81 @@ namespace SFSEnhanced.Mod.Networking
         {
             switch (type)
             {
-                case PacketType.HelloAck:
-                    var ack = Newtonsoft.Json.JsonConvert.DeserializeObject<HelloAckPacket>(json);
-                    if (ack == null) throw new InvalidOperationException("Missing HelloAck payload.");
-                    if (ack.Accepted)
-                    {
-                        PlayerId = ack.PlayerId;
-                        if (!string.IsNullOrEmpty(ack.AuthToken))
-                        {
-                            AuthToken = ack.AuthToken;
-                            SFSEnhanced.Mod.ModSettings.AuthToken = ack.AuthToken;
-                        }
-                    }
-                    else
-                    {
-                        UnityEngine.Debug.LogError($"[SFSEnhanced] Login rejected: {ack.RejectReason}");
-                        Disconnect();
-                    }
-                    break;
                 case PacketType.WorldJoinAck:
                     var worldAck = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(json);
                     if (worldAck == null) throw new InvalidOperationException("Missing WorldJoinAck payload.");
                     if (worldAck.Accepted) CurrentWorldId = worldAck.WorldId;
                     break;
+                case PacketType.AuthError:
+                    var authError = Newtonsoft.Json.JsonConvert.DeserializeObject<AuthErrorPacket>(json);
+                    UnityEngine.Debug.LogError($"[SFSEnhanced] Authentication failed: {authError?.Message}");
+                    Disconnect();
+                    break;
             }
         }
 
-        private async Task ReadLoopAsync(Stream stream, CancellationToken ct, int generation)
+        private void EnqueueSealed(RawFrame frame)
+        {
+            SecureChannel channel = _channel;
+            if (channel == null) return;
+            if (channel.TryOpen(frame.Data, out PacketType type, out string json, out string error, out bool replayed))
+            {
+                if (type != PacketType.Ping) _incoming.Enqueue((type, json));
+                return;
+            }
+            if (!replayed) UnityEngine.Debug.LogWarning($"[SFSEnhanced] Sealed packet rejected: {error}");
+        }
+
+        private async Task ConsumeFramesAsync(int generation, CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested && generation == Volatile.Read(ref _connectionGeneration))
+                {
+                    RawFrame frame = _pendingFrames.Take(ct);
+                    if (frame.IsSealed) EnqueueSealed(frame);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        private async Task PumpAsync(int generation, CancellationToken ct)
         {
             try
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    var (type, json) = await NetMessage.ReadRawAsync(stream);
-                    if (json == null || generation != Volatile.Read(ref _connectionGeneration)) break;
-                    _incoming.Enqueue((type, json));
+                    NetIncomingMessage message = _peer?.ReadMessage();
+                    if (message == null)
+                    {
+                        await Task.Delay(1, ct).ConfigureAwait(false);
+                        continue;
+                    }
+                    try
+                    {
+                        if (message.MessageType == NetIncomingMessageType.StatusChanged)
+                        {
+                            var status = (NetConnectionStatus)message.ReadByte();
+                            if (status == NetConnectionStatus.Connected) _connectTcs?.TrySetResult(true);
+                            if (status == NetConnectionStatus.Disconnected) _connectTcs?.TrySetResult(false);
+                        }
+                        else if (message.MessageType == NetIncomingMessageType.Data)
+                        {
+                            RawFrame frame = SecureFrame.Unwrap(message.ReadBytes(message.LengthBytes));
+                            if (frame != null) _pendingFrames.TryAdd(frame);
+                        }
+                    }
+                    finally
+                    {
+                        _peer?.Recycle(message);
+                    }
                 }
             }
+            catch (OperationCanceledException) { }
             catch (Exception e)
             {
-                if (!ct.IsCancellationRequested)
-                    UnityEngine.Debug.LogWarning($"[SFSEnhanced] Connection lost: {e.Message}");
+                if (!ct.IsCancellationRequested) UnityEngine.Debug.LogWarning($"[SFSEnhanced] Connection lost: {e.Message}");
             }
             finally
             {
@@ -208,11 +228,56 @@ namespace SFSEnhanced.Mod.Networking
                 {
                     _connected = false;
                     CurrentWorldId = null;
-                    try { stream.Dispose(); } catch { }
-                    try { _tcp?.Close(); } catch { }
-                    _stream = null;
-                    _tcp = null;
+                    _connectTcs?.TrySetResult(false);
                 }
+            }
+        }
+
+        private sealed class LidgrenSecureTransport : ISecureTransport
+        {
+            private readonly NetClient _owner;
+
+            public LidgrenSecureTransport(NetClient owner)
+            {
+                _owner = owner;
+            }
+
+            public Task SendPlainAsync(PacketType type, object payload, CancellationToken ct)
+            {
+                return SendFrame(new RawFrame { IsSealed = false, Data = LidgrenWire.Encode(type, payload) });
+            }
+
+            public Task SendSealedAsync(byte[] sealedBytes, CancellationToken ct)
+            {
+                return SendFrame(new RawFrame { IsSealed = true, Data = sealedBytes });
+            }
+
+            public Task<RawFrame> ReceiveRawAsync(CancellationToken ct)
+            {
+                try
+                {
+                    return Task.FromResult(_owner._pendingFrames.Take(ct));
+                }
+                catch (OperationCanceledException)
+                {
+                    return Task.FromResult<RawFrame>(null);
+                }
+                catch (InvalidOperationException)
+                {
+                    return Task.FromResult<RawFrame>(null);
+                }
+            }
+
+            private Task SendFrame(RawFrame frame)
+            {
+                LidgrenClient peer = _owner._peer;
+                NetConnection connection = _owner._connection;
+                if (peer == null || connection == null) throw new InvalidOperationException("The transport is not connected.");
+                byte[] data = SecureFrame.Wrap(frame);
+                NetOutgoingMessage message = peer.CreateMessage(data.Length);
+                message.Write(data);
+                peer.SendMessage(message, connection, NetDeliveryMethod.ReliableOrdered, 0);
+                return Task.CompletedTask;
             }
         }
     }

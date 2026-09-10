@@ -1,55 +1,89 @@
-using System.IO;
-using System.Net.Sockets;
+using System;
+using System.Threading;
 using System.Threading.Tasks;
+using SFSEnhanced.Server.Persistence;
 using SFSEnhanced.Shared.Models;
 using SFSEnhanced.Shared.Protocol;
 
 namespace SFSEnhanced.Server.Networking
 {
-    /// <summary>One connected client's session state.</summary>
     public class ClientConnection
     {
-        public TcpClient Socket { get; }
-        public Stream Stream { get; private set; }
-        public PlayerAccount Account { get; set; }
-        public string CurrentWorldId { get; set; }
-        private readonly SemaphoreSlimLite _writeLock = new();
+        private readonly LidgrenServerConnection _transport;
+        private SecureChannel _channel;
+        private PlayerAccount _account;
+        private string _currentWorldId;
+        private readonly object _stateLock = new object();
 
-        public ClientConnection(TcpClient socket)
+        public ClientConnection(LidgrenServerConnection transport)
         {
-            Socket = socket;
-            Stream = socket.GetStream();
+            _transport = transport;
         }
 
-        public void SetStream(Stream stream) => Stream = stream;
-
-        public async Task SendAsync(PacketType type, object payload)
+        public PlayerAccount Account
         {
-            await _writeLock.WaitAsync();
-            try
+            get { lock (_stateLock) return _account; }
+            private set { lock (_stateLock) _account = value; }
+        }
+
+        public string CurrentWorldId
+        {
+            get { lock (_stateLock) return _currentWorldId; }
+            set { lock (_stateLock) _currentWorldId = value; }
+        }
+
+        public bool IsSecure => _channel != null;
+
+        public void EstablishSecureChannel(SecureChannel channel, PlayerAccount account)
+        {
+            _channel = channel ?? throw new ArgumentNullException(nameof(channel));
+            Account = account ?? throw new ArgumentNullException(nameof(account));
+        }
+
+        public Task SendPlainAsync(PacketType type, object payload, CancellationToken ct)
+        {
+            return _transport.SendFrameAsync(SecureFrame.Wrap(new RawFrame { IsSealed = false, Data = LidgrenWire.Encode(type, payload) }));
+        }
+
+        public Task SendSealedAsync(PacketType type, object payload, CancellationToken ct)
+        {
+            SecureChannel channel = _channel;
+            if (channel == null) throw new InvalidOperationException("The secure channel is not established.");
+            return _transport.SendFrameAsync(SecureFrame.Wrap(new RawFrame { IsSealed = true, Data = channel.Seal(type, payload) }));
+        }
+
+        public async Task<RawFrame> ReceiveRawAsync(CancellationToken ct)
+        {
+            byte[] framed = await _transport.ReceiveAsync(ct).ConfigureAwait(false);
+            return framed == null ? null : SecureFrame.Unwrap(framed);
+        }
+
+        public Task SendAsync(PacketType type, object payload)
+        {
+            SecureChannel channel = _channel;
+            if (channel == null) throw new InvalidOperationException("The secure channel is not established.");
+            return _transport.SendSealedAsync(type, channel.Seal(type, payload));
+        }
+
+        public async Task<(bool ok, PacketType type, string json)> ReceiveSecureAsync(CancellationToken ct)
+        {
+            int consecutiveInvalid = 0;
+            while (true)
             {
-                await NetMessage.WriteAsync(Stream, type, payload);
-            }
-            finally
-            {
-                _writeLock.Release();
+                RawFrame frame = await ReceiveRawAsync(ct).ConfigureAwait(false);
+                if (frame == null) return (false, 0, null);
+                if (!frame.IsSealed) return (true, PacketType.Error, "{\"Message\":\"A plain packet was rejected on an authenticated connection.\"}");
+                if (_channel.TryOpen(frame.Data, out PacketType type, out string json, out string error, out bool replayed))
+                {
+                    consecutiveInvalid = 0;
+                    return (true, type, json);
+                }
+                if (replayed) continue;
+                consecutiveInvalid++;
+                if (consecutiveInvalid >= 32) throw new InvalidOperationException("Too many consecutive invalid packets.");
             }
         }
 
-        public void Close()
-        {
-            try { Socket.Close(); } catch { /* already closed */ }
-        }
-    }
-
-    /// <summary>
-    /// Tiny async mutex so concurrent SendAsync calls (broadcast + a direct reply
-    /// racing on the same connection) don't interleave bytes mid-write.
-    /// </summary>
-    public class SemaphoreSlimLite
-    {
-        private readonly System.Threading.SemaphoreSlim _sem = new(1, 1);
-        public Task WaitAsync() => _sem.WaitAsync();
-        public void Release() => _sem.Release();
+        public void Close() => _transport.Close();
     }
 }

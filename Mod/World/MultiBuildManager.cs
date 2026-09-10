@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using SFS.Parsers.Json;
+using SFS.Parts.Modules;
 using SFS.World;
 using SFSEnhanced.Mod.Networking;
 using SFSEnhanced.Shared.Protocol;
@@ -246,22 +247,7 @@ namespace SFSEnhanced.Mod.World
             _publishTimer = 0f;
             if (string.IsNullOrEmpty(_localBuildId)) return;
             var loc = local.location.Value;
-            PublishLocalState(new BuildStateUpdatePacket
-            {
-                WorldId = _client.CurrentWorldId,
-                BuildId = _localBuildId,
-                PosX = loc.position.x,
-                PosY = loc.position.y,
-                VelX = loc.velocity.x,
-                VelY = loc.velocity.y,
-                RotationDegrees = local.rb2d.transform.eulerAngles.z,
-                AngularVelocity = local.rb2d.angularVelocity,
-                PlanetAddress = loc.planet?.codeName,
-                ThrottlePercent = local.throttle.throttlePercent.Value,
-                WorldTime = WorldTime.main != null ? WorldTime.main.worldTime : 0,
-                Tick = ++_tick
-            });
-            PublishLocalState(new BuildStateUpdatePacket { WorldId = _client.CurrentWorldId, BuildId = _localBuildId, PosX = loc.position.x, PosY = loc.position.y, VelX = loc.velocity.x, VelY = loc.velocity.y, RotationDegrees = local.rb2d.transform.eulerAngles.z, AngularVelocity = local.rb2d.angularVelocity, PlanetAddress = loc.planet?.codeName, ThrottlePercent = local.throttle.throttlePercent.Value, WorldTime = WorldTime.main != null ? WorldTime.main.worldTime : 0, Tick = _tick });
+            _tick++;
             if (_tick == 1 || _tick % 15 == 0) PublishLocalBuild(SnapshotFromRocket(local, _localBuildId, _client.PlayerId));
             PublishRocketPrimary(local, loc);
             PublishRocketSecondary(local);
@@ -305,6 +291,8 @@ namespace SFSEnhanced.Mod.World
                 WorldId = _client.CurrentWorldId,
                 BuildId = _localBuildId,
                 ThrottlePercent = rocket.throttle.throttlePercent.Value,
+                RcsEnabled = rocket.arrowkeys != null && rocket.arrowkeys.rcs.Value,
+                EnginesEnabled = rocket.partHolder != null && rocket.partHolder.GetModules<EngineModule>().Any(engine => engine.engineOn.Value),
                 Tick = _tick
             });
         }

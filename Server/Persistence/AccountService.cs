@@ -3,17 +3,10 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using SFSEnhanced.Shared.Models;
+using SFSEnhanced.Shared.Protocol;
 
 namespace SFSEnhanced.Server.Persistence
 {
-    /// <summary>
-    /// Very lightweight account handling: a player picks a name, gets a random
-    /// auth token back, and reconnects with that token next time. This is enough
-    /// for "friends and persistent identity across sessions" on a community
-    /// server; if you want Steam/itch account linking later, swap the token
-    /// issuing in HandleHello (NetServer) for a verified external login and
-    /// keep everything downstream (PlayerAccount, friends, claims) the same.
-    /// </summary>
     public class AccountService
     {
         private readonly FileStore _store;
@@ -22,9 +15,9 @@ namespace SFSEnhanced.Server.Persistence
 
         public PlayerAccount FindByName(string playerName)
         {
-            foreach (var id in _store.ListIds("accounts"))
+            foreach (string id in _store.ListIds("accounts"))
             {
-                var acc = _store.Load<PlayerAccount>("accounts", id);
+                PlayerAccount acc = _store.Load<PlayerAccount>("accounts", id);
                 if (acc != null && string.Equals(acc.PlayerName, playerName, StringComparison.OrdinalIgnoreCase))
                     return acc;
             }
@@ -35,15 +28,28 @@ namespace SFSEnhanced.Server.Persistence
 
         public (PlayerAccount account, string plainToken) CreateAccount(string playerName)
         {
-            var account = new PlayerAccount { PlayerName = playerName };
+            PlayerAccount account = new PlayerAccount { PlayerName = playerName };
             string token = GenerateToken();
-            account.AuthTokenHash = Hash(token);
+            account.AuthTokenKey = TokenKey(token);
             _store.Save("accounts", account.PlayerId, account);
             return (account, token);
         }
 
-        public bool ValidateToken(PlayerAccount account, string plainToken) =>
-            account != null && account.AuthTokenHash == Hash(plainToken ?? "");
+        public bool ValidateToken(PlayerAccount account, string plainToken)
+        {
+            if (account == null || string.IsNullOrEmpty(account.AuthTokenKey) || string.IsNullOrEmpty(plainToken)) return false;
+            return FixedTimeEquals(account.AuthTokenKey, TokenKey(plainToken));
+        }
+
+        public bool ValidateProof(PlayerAccount account, byte[] proof, byte[] transcriptHash)
+        {
+            if (account == null || string.IsNullOrEmpty(account.AuthTokenKey) || proof == null) return false;
+            byte[] tokenKey;
+            try { tokenKey = Convert.FromBase64String(account.AuthTokenKey); }
+            catch { return false; }
+            byte[] expected = SessionAuth.ComputeTokenProof(tokenKey, transcriptHash);
+            return SessionAuth.FixedTimeEquals(expected, proof);
+        }
 
         public void Touch(PlayerAccount account)
         {
@@ -55,15 +61,16 @@ namespace SFSEnhanced.Server.Persistence
 
         private static string GenerateToken()
         {
-            byte[] bytes = new byte[24];
-            RandomNumberGenerator.Fill(bytes);
-            return Convert.ToBase64String(bytes);
+            return Convert.ToBase64String(SessionAuth.RandomBytes(24));
         }
 
-        private static string Hash(string input)
+        private static string TokenKey(string plainToken) => Convert.ToBase64String(SessionAuth.ComputeTokenKey(plainToken));
+
+        private static bool FixedTimeEquals(string a, string b)
         {
-            using var sha = SHA256.Create();
-            return Convert.ToBase64String(sha.ComputeHash(Encoding.UTF8.GetBytes(input)));
+            byte[] left = Encoding.UTF8.GetBytes(a ?? string.Empty);
+            byte[] right = Encoding.UTF8.GetBytes(b ?? string.Empty);
+            return SessionAuth.FixedTimeEquals(left, right);
         }
     }
 }

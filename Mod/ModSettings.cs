@@ -10,7 +10,6 @@ namespace SFSEnhanced.Mod
         private const string TokenKey = "sfs_enhanced.token";
         private const string DirectoryKey = "sfs_enhanced.directory";
         private const string ServerExecutableKey = "sfs_enhanced.server_executable";
-        private const string CertificateFingerprintKey = "sfs_enhanced.server_certificate_fingerprint";
 
         public static string Host
         {
@@ -40,17 +39,6 @@ namespace SFSEnhanced.Mod
         {
             get => PlayerPrefs.GetString(DirectoryKey, "");
             set { PlayerPrefs.SetString(DirectoryKey, value ?? ""); PlayerPrefs.Save(); }
-        }
-
-        public static string GetServerCertificateFingerprint(string host)
-        {
-            return PlayerPrefs.GetString(CertificateFingerprintKey + "." + (host ?? string.Empty).Trim().ToLowerInvariant(), "");
-        }
-
-        public static void SetServerCertificateFingerprint(string host, string fingerprint)
-        {
-            PlayerPrefs.SetString(CertificateFingerprintKey + "." + (host ?? string.Empty).Trim().ToLowerInvariant(), fingerprint ?? "");
-            PlayerPrefs.Save();
         }
 
         public static string ServerExecutablePath

@@ -32,7 +32,7 @@ namespace SFSEnhanced.Shared.Models
     {
         public string PlayerId = Guid.NewGuid().ToString("N");
         public string PlayerName;
-        public string AuthTokenHash;
+        public string AuthTokenKey;
         public DateTime FirstSeenUtc = DateTime.UtcNow;
         public DateTime LastSeenUtc = DateTime.UtcNow;
         public List<string> FriendPlayerIds = new List<string>();

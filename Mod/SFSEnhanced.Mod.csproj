@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
@@ -16,12 +16,14 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net472" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="AscensionGameDev.Lidgren.Network" Version="1.8.0.13" />
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
   </ItemGroup>
 
   <!--
     Game assemblies live in repo-root Dependencies/ (copied from
     Spaceflight Simulator_Data/Managed/). ModLoader is compiled INTO
-    Assembly-CSharp — no separate ModLoader.dll or Harmony required.
+    Assembly-CSharp â€” no separate ModLoader.dll or Harmony required.
   -->
   <ItemGroup>
     <Reference Include="Assembly-CSharp">

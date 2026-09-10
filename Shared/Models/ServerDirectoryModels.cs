@@ -16,7 +16,6 @@ namespace SFSEnhanced.Shared.Models
         public int OnlinePlayers;
         public int MaxPlayers;
         public bool PasswordProtected;
-        public string CertificateFingerprint;
         public DateTime LastHeartbeatUtc;
     }
 
@@ -31,7 +30,6 @@ namespace SFSEnhanced.Shared.Models
         public string Motd;
         public int MaxPlayers;
         public bool PasswordProtected;
-        public string CertificateFingerprint;
     }
 
     public class ServerRegisterResponse
