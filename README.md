@@ -172,7 +172,9 @@ SFS Enhanced is distributed under the GNU General Public License v3.0 where GPL-
 
 ## Package system
 
-SFS Enhanced supports `.sfspkg` and ordinary `.zip` packages. Drop an archive into `Mods\SFS Enhanced\Packages\` and it is installed on the next mod load. Packages can contain `package.json` for explicit file mappings, dependencies, and version metadata. Legacy archives without a manifest are also supported when they contain supported top-level folders such as `Mods`, `Saving`, `Resources`, `StreamingAssets`, or `UserData`.
+SFS Enhanced supports `.pack`, `.sfspkg`, and ordinary `.zip` packages. Drop an archive into `Mods\SFS Enhanced\Packages\` and it is installed on the next mod load; the archive is consumed once installed. Packages can contain `package.json` for explicit file mappings, dependencies, and version metadata. Legacy archives without a manifest are also supported when they contain supported top-level folders such as `Mods`, `Saving`, `Resources`, `StreamingAssets`, or `UserData`.
+
+Building the Mod or Server projects in Release automatically produces `artifacts\SFSEnhanced-Mod-<version>.pack` and `artifacts\SFSEnhanced-Server-<version>.pack` (override the version with `-p:SfsPackVersion=x.y.z`). The packs can be installed by dropping them into the Packages folder as above. The `tools\BuildSfsPack` tool builds custom archives: `dotnet BuildSfsPack.dll --out My.pack --id my-package --file <source> <target-under-Mods/...> --dir <folder> <targetRoot>`. Package targets may only write under `Mods`, `Saving`, `Resources`, `StreamingAssets`, or `UserData` inside the game root; escapes are rejected and pre-existing files are backed up for uninstall.
 
 Example manifest:
 

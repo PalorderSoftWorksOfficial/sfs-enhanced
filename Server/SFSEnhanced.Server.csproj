@@ -19,4 +19,21 @@
     <ProjectReference Include="..\Shared\SFSEnhanced.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\tools\BuildSfsPack\BuildSfsPack.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <SfsPackVersion Condition="'$(SfsPackVersion)' == ''">1.0.0</SfsPackVersion>
+    <SfsPackOutput Condition="'$(SfsPackOutput)' == ''">$(MSBuildThisFileDirectory)..\artifacts\SFSEnhanced-Server-$(SfsPackVersion).pack</SfsPackOutput>
+  </PropertyGroup>
+
+  <Target Name="BuildSfsPack" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <PropertyGroup>
+      <SfsPackPayloadDir Condition="$(OutputPath.EndsWith('\'))">$(OutputPath.Substring(0, $([MSBuild]::Add($(OutputPath.Length), -1))))</SfsPackPayloadDir>
+      <SfsPackPayloadDir Condition="'$(SfsPackPayloadDir)' == ''">$(OutputPath)</SfsPackPayloadDir>
+    </PropertyGroup>
+    <Exec Command="dotnet &quot;$(MSBuildThisFileDirectory)..\tools\BuildSfsPack\bin\$(Configuration)\net8.0\BuildSfsPack.dll&quot; --out &quot;$(SfsPackOutput)&quot; --id sfs-enhanced-server --name &quot;SFS Enhanced Dedicated Server&quot; --version $(SfsPackVersion) --description &quot;Cross-platform dedicated server for SFS Enhanced multiplayer. Run SFSEnhanced.Server with .NET 8 installed.&quot; --file &quot;$(MSBuildThisFileDirectory)server.example.json&quot; &quot;Mods/SFSEnhancedServer/server.example.json&quot; --dir &quot;$(SfsPackPayloadDir)&quot; &quot;Mods/SFSEnhancedServer&quot;" />
+  </Target>
+
 </Project>

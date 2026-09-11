@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace SFSEnhanced.Mod.Packaging
+namespace SFSEnhanced.Shared.Packaging
 {
     public sealed class PackageManifest
     {
