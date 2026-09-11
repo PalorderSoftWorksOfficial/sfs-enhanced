@@ -36,21 +36,21 @@ namespace SFSEnhanced.Mod.Social
             // TODO(game-hook): refresh your friends panel's list view here.
         }
 
-        public async void SendFriendRequest(string playerName) =>
-            await _client.SendAsync(PacketType.FriendRequest, new FriendRequestPacket { TargetPlayerName = playerName });
+        public void SendFriendRequest(string playerName) =>
+            _ = _client.SendAsync(PacketType.FriendRequest, new FriendRequestPacket { TargetPlayerName = playerName });
 
-        public async void RespondToRequest(string fromPlayerId, bool accept) =>
-            await _client.SendAsync(PacketType.FriendRequestResponse, new FriendRequestResponsePacket
+        public void RespondToRequest(string fromPlayerId, bool accept) =>
+            _ = _client.SendAsync(PacketType.FriendRequestResponse, new FriendRequestResponsePacket
             {
                 FromPlayerId = fromPlayerId,
                 Accepted = accept,
             });
 
-        public async void RefreshFriendsList() =>
-            await _client.SendAsync(PacketType.FriendListRequest, null);
+        public void RefreshFriendsList() =>
+            _ = _client.SendAsync(PacketType.FriendListRequest, null);
 
-        public async void InviteFriendToCurrentWorld(string playerName) =>
-            await _client.SendAsync(PacketType.FriendInviteToWorld, new FriendInviteToWorldPacket
+        public void InviteFriendToCurrentWorld(string playerName) =>
+            _ = _client.SendAsync(PacketType.FriendInviteToWorld, new FriendInviteToWorldPacket
             {
                 TargetPlayerName = playerName,
                 WorldId = _client.CurrentWorldId,

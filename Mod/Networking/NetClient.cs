@@ -72,7 +72,7 @@ namespace SFSEnhanced.Mod.Networking
                     SFSEnhanced.Mod.ModSettings.AuthToken = result.IssuedToken;
                 }
                 _connected = true;
-                _ = ConsumeFramesAsync(generation, _cts.Token);
+                _ = Task.Run(() => ConsumeFrames(generation, _cts.Token), _cts.Token);
                 return true;
             }
             catch (Exception e)
@@ -171,7 +171,7 @@ namespace SFSEnhanced.Mod.Networking
             if (!replayed) UnityEngine.Debug.LogWarning($"[SFSEnhanced] Sealed packet rejected: {error}");
         }
 
-        private async Task ConsumeFramesAsync(int generation, CancellationToken ct)
+        private void ConsumeFrames(int generation, CancellationToken ct)
         {
             try
             {

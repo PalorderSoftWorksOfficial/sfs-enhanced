@@ -1,3 +1,4 @@
+using System;
 using ModLoader;
 using ModLoader.Helpers;
 using SFSEnhanced.Mod.Networking;
@@ -60,23 +61,39 @@ namespace SFSEnhanced.Mod
             ModSettings.Host = host;
             if (port.HasValue) ModSettings.Port = port.Value;
             ModSettings.PlayerName = playerName;
-            bool ok = await Client.ConnectAsync(host, port, playerName);
-            Debug.Log(ok ? $"[SFSEnhanced] Connected to {host} as {playerName}" : "[SFSEnhanced] Connection failed.");
-            if (ok) ServerHistory.Record(host, port, host);
+            try
+            {
+                bool ok = await Client.ConnectAsync(host, port, playerName);
+                Debug.Log(ok ? $"[SFSEnhanced] Connected to {host} as {playerName}" : "[SFSEnhanced] Connection failed.");
+                if (ok) ServerHistory.Record(host, port, host);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SFSEnhanced] Connection to {host} failed: {e.Message}");
+            }
         }
     }
 
     internal sealed class ModLoop : MonoBehaviour
     {
         private ModMain _mod;
+        private float _playButtonRetry;
 
-        public void Bind(ModMain mod) => _mod = mod;
+        public void Bind(ModMain mod)
+        {
+            _mod = mod;
+            SceneHelper.OnHomeSceneLoaded += new System.Action<Scene>(_ => _playButtonRetry = 5f);
+        }
 
         private void Update()
         {
             if (_mod == null) return;
             _mod.Client?.PumpIncoming();
-            _mod.Menu?.EnsurePlayButton();
+            if (_playButtonRetry > 0f)
+            {
+                _playButtonRetry -= Time.deltaTime;
+                _mod.Menu?.EnsurePlayButton();
+            }
             _mod.Builds?.TickInterpolation(Time.deltaTime);
             _mod.Builds?.TickLocalPublish(Time.deltaTime);
             _mod.RocketFleet?.Tick(Time.deltaTime);

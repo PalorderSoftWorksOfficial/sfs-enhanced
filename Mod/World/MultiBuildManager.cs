@@ -22,6 +22,7 @@ namespace SFSEnhanced.Mod.World
         private double _serverWorldTime;
         private double _serverTimewarp = 1.0;
         private bool _hasServerWorldTime;
+        private readonly Dictionary<string, float> _partCache = new Dictionary<string, float>();
         private const float PublishInterval = 1f / 15f;
         private const float TimeSyncInterval = 0.25f;
 
@@ -45,6 +46,7 @@ namespace SFSEnhanced.Mod.World
         {
             foreach (var remote in _remoteBuilds.Values.ToList()) DestroyRemoteRocket(remote);
             _remoteBuilds.Clear();
+            _partCache.Clear();
             _localRocket = null;
             _localBuildId = null;
             _publishTimer = 0f;
@@ -101,6 +103,9 @@ namespace SFSEnhanced.Mod.World
                     ApplyRocketSecondary(Newtonsoft.Json.JsonConvert.DeserializeObject<RocketSecondaryStatePacket>(json));
                     break;
                 case PacketType.PartModuleState:
+                    var moduleState = Newtonsoft.Json.JsonConvert.DeserializeObject<PartModuleStatePacket>(json);
+                    if (moduleState != null && moduleState.WorldId == _client.CurrentWorldId && _remoteBuilds.TryGetValue(moduleState.BuildId, out var moduleRemote))
+                        PartModuleSync.Apply(moduleRemote.Rocket, moduleState);
                     break;
                 case PacketType.PlayerConnected:
                 case PacketType.PlayerDisconnected:
@@ -181,6 +186,10 @@ namespace SFSEnhanced.Mod.World
         {
             if (state == null || state.WorldId != _client.CurrentWorldId || !_remoteBuilds.TryGetValue(state.BuildId, out var remote)) return;
             remote.TargetThrottlePercent = state.ThrottlePercent;
+            var rocket = remote.Rocket;
+            if (rocket == null || state.ThrottlePercent == null) return;
+            try { rocket.throttle.throttlePercent.Value = Mathf.Clamp01((float)state.ThrottlePercent.Value); }
+            catch (Exception e) { Debug.LogWarning($"[SFSEnhanced] Ghost throttle apply failed: {e.Message}"); }
         }
         private void ApplyStateUpdate(BuildStateUpdatePacket update)
         {
@@ -248,7 +257,11 @@ namespace SFSEnhanced.Mod.World
             if (string.IsNullOrEmpty(_localBuildId)) return;
             var loc = local.location.Value;
             _tick++;
-            if (_tick == 1 || _tick % 15 == 0) PublishLocalBuild(SnapshotFromRocket(local, _localBuildId, _client.PlayerId));
+            if (_tick == 1 || _tick % 15 == 0)
+            {
+                PublishLocalBuild(SnapshotFromRocket(local, _localBuildId, _client.PlayerId));
+                PartModuleSync.Publish(_client, _client.CurrentWorldId, _localBuildId, local, _tick, _partCache);
+            }
             PublishRocketPrimary(local, loc);
             PublishRocketSecondary(local);
         }
@@ -266,9 +279,9 @@ namespace SFSEnhanced.Mod.World
             rocket.rb2d.angularVelocity = remote.TargetAngularVelocity;
         }
 
-        private async void PublishRocketPrimary(Rocket rocket, Location loc)
+        private void PublishRocketPrimary(Rocket rocket, Location loc)
         {
-            await _client.SendAsync(PacketType.RocketPrimaryState, new RocketPrimaryStatePacket
+            _ = _client.SendAsync(PacketType.RocketPrimaryState, new RocketPrimaryStatePacket
             {
                 WorldId = _client.CurrentWorldId,
                 BuildId = _localBuildId,
@@ -284,9 +297,9 @@ namespace SFSEnhanced.Mod.World
             });
         }
 
-        private async void PublishRocketSecondary(Rocket rocket)
+        private void PublishRocketSecondary(Rocket rocket)
         {
-            await _client.SendAsync(PacketType.RocketSecondaryState, new RocketSecondaryStatePacket
+            _ = _client.SendAsync(PacketType.RocketSecondaryState, new RocketSecondaryStatePacket
             {
                 WorldId = _client.CurrentWorldId,
                 BuildId = _localBuildId,
@@ -296,19 +309,19 @@ namespace SFSEnhanced.Mod.World
                 Tick = _tick
             });
         }
-        private async void PublishLocalBuild(BuildSnapshot snapshot)
+        private void PublishLocalBuild(BuildSnapshot snapshot)
         {
-            await _client.SendAsync(PacketType.BuildSpawn, snapshot);
+            _ = _client.SendAsync(PacketType.BuildSpawn, snapshot);
         }
 
-        private async void PublishLocalState(BuildStateUpdatePacket update)
+        private void PublishLocalState(BuildStateUpdatePacket update)
         {
-            await _client.SendAsync(PacketType.BuildStateUpdate, update);
+            _ = _client.SendAsync(PacketType.BuildStateUpdate, update);
         }
 
-        private async void PublishRemove(string buildId)
+        private void PublishRemove(string buildId)
         {
-            await _client.SendAsync(PacketType.BuildRemove, new BuildSnapshot { BuildId = buildId, OwnerPlayerId = _client.PlayerId });
+            _ = _client.SendAsync(PacketType.BuildRemove, new BuildSnapshot { BuildId = buildId, OwnerPlayerId = _client.PlayerId });
         }
 
         private static BuildSnapshot SnapshotFromRocket(Rocket rocket, string buildId, string ownerPlayerId)

@@ -1,26 +1,28 @@
 # Architecture
 
 ```
-                       TCP, length-prefixed JSON (Shared/Protocol)
-   ┌────────────┐   Hello / WorldJoin / BuildStateUpdate / Chat ...   ┌──────────────┐
-   │  SFS + Mod │ ───────────────────────────────────────────────▶   │ SFS Enhanced │
-   │ (NetClient)│ ◀───────────────────────────────────────────────   │    Server    │
-   └────────────┘        BuildSpawn / FriendListResponse / ...       └──────┬───────┘
+              Lidgren UDP, length-prefixed JSON (Shared/Protocol)
+   ┌────────────┐   handshake (plain) / sealed app packets   ┌──────────────┐
+   │  SFS + Mod │ ─────────────────────────────────────────▶   │ SFS Enhanced │
+   │ (NetClient)│ ◀────────────────────────────────────────   │    Server    │
+   └────────────┘   WorldJoin / RocketPrimaryState / Chat     └──────┬───────┘
                                                                               │
                                                                      Server/Persistence
                                                                     (JSON files: worlds/, accounts/)
 ```
 
-## Why raw TCP + hand-rolled framing instead of a netcode library
+## Why Lidgren UDP + an application-layer secure channel
 
-- Zero extra NuGet dependency on the mod side. The mod already has to ship as a
-  single DLL alongside the game's own assemblies; pulling in a full networking
-  library (LiteNetLib, Mirror, etc.) means bundling and version-matching its
-  DLL too. A ~120-line framing helper (`Shared/Protocol/NetMessage.cs`) avoids that.
-- SFS is not a twitch shooter — sub-16ms latency doesn't matter here, so TCP's
-  reliability/ordering guarantees are a feature, not a cost. UDP-based netcode
-  libraries earn their complexity in games where every millisecond of jitter
-  matters; this isn't that game.
+- Two Lidgren channels with distinct delivery semantics: reliable-ordered for
+  events that must not be lost (spawn/despawn, world, chat, timewarp votes) and
+  unreliable-sequenced for the hot state stream (rocket positions, build
+  updates) where the newest packet wins and old ones must never queue up.
+- UDP provides no transport security, so the session authenticates and encrypts
+  at the application layer: ephemeral P256 key exchange, an HMAC proof of the
+  auth token bound to the handshake transcript (tokens never cross the wire;
+  the server stores only a hash), then AES-CTR + HMAC-SHA256 sealed packets
+  with per-stream sequence numbers and sliding replay windows. Auth failures
+  disconnect cleanly; bad MACs drop the packet without killing the session.
 - JSON payloads (via Newtonsoft.Json, which SFS already ships with — see the
   `Mod.csproj` reference list, that DLL is already in `Managed/`) keep every
   packet human-readable, which matters a lot for a mod you'll be debugging

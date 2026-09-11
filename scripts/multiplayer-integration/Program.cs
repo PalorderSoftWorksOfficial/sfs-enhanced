@@ -1,3 +1,4 @@
+#nullable disable
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
@@ -6,6 +7,11 @@ using System.Threading.Tasks;
 using Lidgren.Network;
 using Newtonsoft.Json;
 using SFSEnhanced.Shared.Protocol;
+
+internal static class TestSettings
+{
+    public static readonly int Port = int.TryParse(Environment.GetEnvironmentVariable("SFS_INTEGRATION_PORT"), out var p) && p > 0 ? p : 18777;
+}
 
 sealed class PeerTransport : ISecureTransport
 {
@@ -109,7 +115,7 @@ sealed class TestPeer : IDisposable
         config.EnableMessageType(NetIncomingMessageType.Data);
         var peer = new NetPeer(config);
         peer.Start();
-        NetConnection connection = peer.Connect("127.0.0.1", 18777);
+        NetConnection connection = peer.Connect("127.0.0.1", TestSettings.Port);
         var connectedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _ = WatchStatusAsync(peer, connectedTcs);
         await Task.WhenAny(connectedTcs.Task, Task.Delay(8000));
@@ -129,7 +135,7 @@ sealed class TestPeer : IDisposable
         config.EnableMessageType(NetIncomingMessageType.Data);
         var peer = new NetPeer(config);
         peer.Start();
-        NetConnection connection = peer.Connect("127.0.0.1", 18777);
+        NetConnection connection = peer.Connect("127.0.0.1", TestSettings.Port);
         var connectedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _ = WatchStatusAsync(peer, connectedTcs);
         await Task.WhenAny(connectedTcs.Task, Task.Delay(8000));
