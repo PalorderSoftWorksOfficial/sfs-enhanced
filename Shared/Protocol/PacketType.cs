@@ -15,6 +15,8 @@ namespace SFSEnhanced.Shared.Protocol
         AuthChallenge = 5,      // S->C: server challenge + client nonce (cleartext)
         AuthResponse = 6,       // C->S: HMAC proof over challenge, sealed with registration secret when claiming a name
         AuthResult = 7,         // S->C: session established (from here everything is sealed)
+        RegistrationPrompt = 8, // S->C: sealed, the server asks for a registration password proof
+        RegistrationAuth = 9,   // C->S: sealed, HMAC over the registration password inside the secure channel
 
         // --- Server / world discovery ---
         ServerInfoRequest = 10, // C->S
@@ -69,6 +71,11 @@ namespace SFSEnhanced.Shared.Protocol
 
         // --- Chat ---
         ChatMessage = 70,
+
+        ProfileRequest = 80,
+        ProfileResponse = 81,
+        ProfileUpdate = 82,
+        ProfileUpdateResult = 83,
 
         Error = 255,
         AuthError = 254,

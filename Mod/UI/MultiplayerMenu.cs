@@ -1,12 +1,12 @@
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
+using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading.Tasks;
 using ModLoader.Helpers;
-using SFS.UI;
-using SFS.UI.ModGUI;
 using SFS.Input;
+using SFS.UI;
 using SFSEnhanced.Mod.Networking;
+using SFSEnhanced.Mod.UI.App;
 using SFSEnhanced.Shared.Models;
 using SFSEnhanced.Shared.Protocol;
 using UnityEngine;
@@ -14,48 +14,43 @@ using UnityEngine.SceneManagement;
 
 namespace SFSEnhanced.Mod.UI
 {
-    public partial class MultiplayerMenu
+    internal sealed class MultiplayerMenu : IAppActions
     {
         private readonly ModMain _mod;
         private readonly ServerDirectoryClient _directory = new ServerDirectoryClient();
-        private GameObject _holder;
-        private Window _window;
-        private Label _status;
-        private bool _visible;
+        private readonly AppState _state = new AppState();
+        private readonly ConcurrentQueue<Action> _deferred = new ConcurrentQueue<Action>();
+
+        private AppShell _shell;
         private MultiplayerScreen _screen;
         private GameObject _screenHolder;
+        private Screen_Base _previousScreen;
         private SFS.UI.Button _playButton;
         private GameObject _playMenu;
-        private string _host = "127.0.0.1";
-        private string _port = "";
-        private string _playerName = "Pilot";
-        private string _worldName = "Shared World";
-        private bool _worldPublic = true;
-        private string _serverDirectoryUrl;
-        private string _localClaimId;
-        private string _pendingInviteWorldId;
-        private string _pendingInviteFrom;
-        private GameObject _serverResultsHolder;
-        private GameObject _browserHolder;
-        private GameObject _worldToolsHolder;
-        private GameObject _friendsHolder;
-        private GameObject _friendsResultsHolder;
-        private GameObject _chatHolder;
-        private GameObject _chatResultsHolder;
-        private Transform _chatRoot;
-        private string _friendTarget = "";
-        private string _chatMessage = "";
-        private readonly List<string> _chatLog = new List<string>();
-        private GameObject _timeWarpVoteHolder;
+        private string _host;
+        private int? _port;
+        private long _chatSequence;
+        private string _forgetArmedEndpointKey;
+        private string _forgetArmedFingerprint;
+        private float _forgetArmedAt;
+
+        public AppState State => _state;
+
+        public ModMain Mod => _mod;
 
         public MultiplayerMenu(ModMain mod)
         {
             _mod = mod;
-            _serverDirectoryUrl = ModSettings.DirectoryUrl;
-            _playerName = ModSettings.PlayerName;
             _host = ModSettings.Host;
-            _port = "";
             _mod.Client.OnPacket += OnPacket;
+            _mod.Client.ProfileChanged += () => _state.NotifyContent();
+            _mod.Client.Disconnected += () => RunOnMainThread(HandleTransportDrop);
+            _mod.Client.IdentityPromptChanged += () => RunOnMainThread(() =>
+            {
+                _state.PendingIdentity = _mod.Client.PendingIdentity;
+                _state.NotifyContent();
+            });
+            _state.MigrationNotice = _mod.Client.MigrationNotice;
             SceneHelper.OnHomeSceneUnloaded += new Action<Scene>(_ =>
             {
                 Hide();
@@ -86,108 +81,100 @@ namespace SFSEnhanced.Mod.UI
 
         public void Toggle()
         {
-            if (_visible) Hide();
-            else Show();
+            if (_screen != null)
+            {
+                if (ScreenManager.main != null && ScreenManager.main.CurrentScreen != _screen)
+                {
+                    Debug.LogWarning("[SFSEnhanced] Another screen is open above the multiplayer shell; close it first.");
+                    return;
+                }
+                Hide();
+                return;
+            }
+            Show();
         }
+
+        public bool CanOpenHere() => _screen != null || SceneManager.GetActiveScene().name != "World_PC";
 
         public void Show()
         {
-            if (_visible) return;
-            _visible = true;
-            _screenHolder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "SFSEnhanced_MultiplayerScreen");
+            if (_screen != null) return;
+            if (ScreenManager.main == null)
+            {
+                Debug.LogWarning("[SFSEnhanced] ScreenManager is unavailable; the multiplayer screen cannot open.");
+                return;
+            }
+
+            if (SceneManager.GetActiveScene().name == "World_PC")
+            {
+                Debug.LogWarning("[SFSEnhanced] The full shell is disabled in flight; a non-pausing overlay is not implemented yet.");
+                return;
+            }
+
+            _screenHolder = CreateScreenHolder();
+            if (_screenHolder == null)
+            {
+                Debug.LogError("[SFSEnhanced] No canvas accepted the multiplayer screen; refusing to open an invisible window.");
+                return;
+            }
+
+            _previousScreen = ScreenManager.main.CurrentScreen;
             _screen = _screenHolder.AddComponent<MultiplayerScreen>();
             _screen.Bind(this);
             ScreenManager.main.OpenScreen(() => _screen);
+            Debug.Log($"[SFSEnhanced] screen stack {ScreenManager.main.GetStackCount()} after open.");
+        }
+
+        private static GameObject CreateScreenHolder()
+        {
+            GameObject holder = TryCreateHolder(SFS.UI.ModGUI.Builder.SceneToAttach.BaseScene);
+            if (holder != null) return holder;
+            return TryCreateHolder(SFS.UI.ModGUI.Builder.SceneToAttach.CurrentScene);
+        }
+
+        private static GameObject TryCreateHolder(SFS.UI.ModGUI.Builder.SceneToAttach mode)
+        {
+            GameObject holder;
+            try
+            {
+                holder = SFS.UI.ModGUI.Builder.CreateHolder(mode, "SFSEnhanced_MultiplayerScreen");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[SFSEnhanced] Mount attempt {mode} failed: {e.Message}");
+                return null;
+            }
+
+            if (holder != null && holder.transform.parent != null) return holder;
+            if (holder != null) UnityEngine.Object.Destroy(holder);
+            return null;
         }
 
         internal void BuildWindow(Transform parent)
         {
-            ModSettings.PlayerName = _playerName;
+            ModSettings.PlayerName = string.IsNullOrWhiteSpace(ModSettings.PlayerName) ? "Player" : ModSettings.PlayerName;
             ModSettings.Host = _host;
-            if (int.TryParse(_port, out var savedPort)) ModSettings.Port = savedPort;
-            ClearServerResults();
-            _holder = parent.gameObject;
-            _window = Builder.CreateWindow(parent, Builder.GetRandomID(), 900, 620, 0, 310, false, false, 0.98f, "SFS Enhanced Multiplayer");
-            var root = _window.ChildrenHolder;
+            if (_port.HasValue) ModSettings.Port = _port.Value;
 
-            Builder.CreateLabel(root, 460, 32, 0, -38, "MULTIPLAYER");
-            Builder.CreateLabel(root, 460, 26, 0, -70, "Connect, browse worlds, manage friends, and chat.");
-            Builder.CreateButton(root, 112, 42, -180, -118, BrowseServers, "BROWSE");
-            Builder.CreateButton(root, 112, 42, -60, -118, ShowHostControls, "HOST");
-            Builder.CreateButton(root, 112, 42, 60, -118, ShowFriendsPanel, "FRIENDS");
-            Builder.CreateButton(root, 112, 42, 180, -118, ShowChatPanel, "CHAT");
-            Builder.CreateButton(root, 112, 42, -180, -172, RequestServerInfo, "SERVER INFO");
-            Builder.CreateButton(root, 112, 42, -60, -172, () =>
-            {
-                if (!_mod.Client.IsConnected)
-                {
-                    SetStatus("Connect to a server first.");
-                    return;
-                }
-                ShowWorldBrowser();
-            }, "WORLD LIST");
-            Builder.CreateButton(root, 112, 42, 60, -172, () =>
-            {
-                if (!_mod.Client.IsConnected || string.IsNullOrEmpty(_mod.Client.CurrentWorldId))
-                {
-                    SetStatus("You are not in a world.");
-                    return;
-                }
-                _ = LeaveWorldAsync();
-            }, "LEAVE WORLD");
-            Builder.CreateButton(root, 112, 42, 180, -172, ShowWorldToolsPanel, "WORLD TOOLS");
+            _state.ServerHost = _port.HasValue ? _host + ":" + _port.Value : _host;
+            _shell = new AppShell(this);
+            _shell.Build(parent);
 
-            Builder.CreateInputWithLabel(root, 420, 40, 0, -240, "Player name", _playerName, s =>
+            if (_mod.Client.IsConnected)
             {
-                _playerName = s;
-                ModSettings.PlayerName = s;
-            });
-            Builder.CreateInputWithLabel(root, 420, 40, 0, -290, "Directory", _serverDirectoryUrl, s =>
-            {
-                _serverDirectoryUrl = s;
-                ModSettings.DirectoryUrl = s;
-            });
-            Builder.CreateInputWithLabel(root, 420, 40, 0, -340, "Server host", _host, s => _host = s);
-            Builder.CreateInputWithLabel(root, 420, 40, 0, -390, "Port override (optional)", _port, s => _port = s);
-            Builder.CreateInputWithLabel(root, 420, 40, 0, -440, "World name", _worldName, s => _worldName = s);
-            Builder.CreateToggleWithLabel(root, 420, 40, () => _worldPublic, () => _worldPublic = !_worldPublic, 0, -480, "Public world");
-
-            Builder.CreateButton(root, 130, 38, -155, -530, () =>
-            {
-                int? port = int.TryParse(_port, out var parsedPort) ? parsedPort : (int?)null;
-                _mod.ConnectToServer(_host, port, _playerName);
-                SetStatus(port.HasValue ? $"Resolving {_host}:{port.Value}..." : $"Resolving {_host} using SRV...");
-            }, "CONNECT");
-            Builder.CreateButton(root, 130, 38, 0, -530, () =>
-            {
-                if (!_mod.Client.IsConnected)
-                {
-                    SetStatus("Connect to a server first.");
-                    return;
-                }
-                _ = _mod.Client.SendAsync(PacketType.WorldCreate, new WorldCreatePacket { Name = _worldName, IsPublic = _worldPublic });
-                SetStatus(_worldPublic ? "Creating public world..." : "Creating private world...");
-            }, "CREATE WORLD");
-            Builder.CreateButton(root, 130, 38, 155, -530, () =>
-            {
-                _mod.Client.Disconnect();
-                SetStatus("Disconnected");
-            }, "DISCONNECT");
-            _status = Builder.CreateLabel(root, 460, 34, 0, -572, "Not connected");
+                RefreshFriends();
+                RefreshWorlds();
+            }
         }
 
         internal void DestroyWindow()
         {
-            if (_window != null) UnityEngine.Object.Destroy(_window.gameObject);
-            _window = null;
-            _holder = null;
-            _status = null;
-            _serverResultsHolder = null;
+            if (_shell != null) _shell.Dispose();
+            _shell = null;
         }
 
         internal void OnScreenClosed()
         {
-            _visible = false;
             _screen = null;
             if (_screenHolder != null) UnityEngine.Object.Destroy(_screenHolder);
             _screenHolder = null;
@@ -195,17 +182,54 @@ namespace SFSEnhanced.Mod.UI
 
         public void Hide()
         {
-            if (_screen != null && ScreenManager.main.CurrentScreen == _screen)
+            MultiplayerScreen screen = _screen;
+            if (screen == null || ScreenManager.main == null)
             {
-                _screen.Close();
+                OnScreenClosed();
+                DestroyWindow();
                 return;
             }
+
+            int before = ScreenManager.main.GetStackCount();
+            bool buried = ScreenManager.main.CurrentScreen != screen;
+
+            if (!RestorePreviousScreen())
+            {
+                Debug.LogWarning("[SFSEnhanced] No screen to restore; keeping the multiplayer shell open instead of destroying a live screen.");
+                return;
+            }
+
+            if (ScreenManager.main.CurrentScreen == (Screen_Base)screen)
+            {
+                Debug.LogWarning("[SFSEnhanced] The multiplayer screen is still current after restore; leaving it open.");
+                return;
+            }
+
+            Debug.Log($"[SFSEnhanced] screen stack {before} -> {ScreenManager.main.GetStackCount()} after hide (buried: {buried}).");
+
             OnScreenClosed();
             DestroyWindow();
-            HideFriendsPanel();
-            HideChatPanel();
-            HideBrowserPanel();
-            HideWorldToolsPanel();
+        }
+
+        private bool RestorePreviousScreen()
+        {
+            if (ScreenManager.main == null) return false;
+            try
+            {
+                Screen_Base previous = _previousScreen != null ? _previousScreen : ScreenManager.main.initialScreen;
+                if (previous == null) return false;
+                ScreenManager.main.SetStack(() => previous);
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[SFSEnhanced] Could not restore the previous screen: " + e.Message);
+                return false;
+            }
+            finally
+            {
+                _previousScreen = null;
+            }
         }
 
         public void CleanupOnHomeUnload()
@@ -215,11 +239,672 @@ namespace SFSEnhanced.Mod.UI
             _playMenu = null;
         }
 
-        private void SetStatus(string text)
+        internal void Tick()
         {
-            if (_status != null) _status.Text = text;
-            UnityEngine.Debug.Log("[SFSEnhanced] " + text);
+            Action action;
+            while (_deferred.TryDequeue(out action))
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError("[SFSEnhanced] Deferred UI action failed: " + e);
+                }
+            }
         }
 
+        private void RunOnMainThread(Action action) => _deferred.Enqueue(action);
+
+        public void Navigate(string pageId)
+        {
+            if (_shell != null) _shell.Navigate(pageId);
+        }
+
+        public bool Back() => _shell != null && _shell.Back();
+
+        private void HandleTransportDrop()
+        {
+            if (!_state.Connected) return;
+            _state.ResetConnection();
+            _state.Chat.Clear();
+            _state.SetStatus("Disconnected from the server.", true);
+            _state.NotifyContent();
+        }
+
+        public void SetPlayerName(string playerName)
+        {
+            string trimmed = (playerName ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+            {
+                SetStatus("Enter a player name.", true);
+                return;
+            }
+            if (trimmed.Length > 32)
+            {
+                SetStatus("Player names are limited to 32 characters.", true);
+                return;
+            }
+            ModSettings.PlayerName = trimmed;
+            SetStatus("Player name saved. It applies the next time you connect.");
+        }
+
+        private string _pendingRegistrationPassword;
+        private bool _pendingCreateAccount;
+
+        public void Connect(string host, string portText) => StartConnect(host, portText, null, false);
+
+        public void CreateAccount(string host, string portText, string registrationPassword)
+            => StartConnect(host, portText, registrationPassword, true);
+
+        public void RetryWithPassword(string registrationPassword)
+        {
+            if (string.IsNullOrEmpty(_host))
+            {
+                SetStatus("Connect to a server before entering a password.", true);
+                return;
+            }
+            _pendingRegistrationPassword = registrationPassword;
+            SetStatus(_pendingCreateAccount ? $"Creating an account on {_state.ServerHost}..." : $"Connecting to {_state.ServerHost}...");
+            _ = ConnectAndReportAsync(_host, _port, ModSettings.PlayerName, registrationPassword, _pendingCreateAccount);
+        }
+
+        private void StartConnect(string host, string portText, string registrationPassword, bool createAccount)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                SetStatus("Enter a server host.", true);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(ModSettings.PlayerName))
+            {
+                SetStatus("Set a player name in Settings first.", true);
+                return;
+            }
+
+            int parsed;
+            bool hasPort = int.TryParse(portText, out parsed);
+            if (!string.IsNullOrWhiteSpace(portText) && (!hasPort || parsed < 1 || parsed > 65535))
+            {
+                SetStatus("Port must be between 1 and 65535.", true);
+                return;
+            }
+
+            _host = host.Trim();
+            _port = string.IsNullOrWhiteSpace(portText) ? (int?)null : parsed;
+            _pendingRegistrationPassword = registrationPassword;
+            _pendingCreateAccount = createAccount;
+            _state.ServerHost = _port.HasValue ? _host + ":" + _port.Value : _host;
+            if (createAccount) SetStatus($"Creating an account on {_state.ServerHost}...");
+            else SetStatus(_port.HasValue ? $"Connecting to {_host}:{_port.Value}..." : $"Resolving {_host} over SRV...");
+            _ = ConnectAndReportAsync(_host, _port, ModSettings.PlayerName, registrationPassword, createAccount);
+        }
+
+        private async Task ConnectAndReportAsync(string host, int? port, string playerName, string registrationPassword, bool createAccount)
+        {
+            bool ok = await _mod.ConnectToServer(host, port, playerName, registrationPassword, createAccount);
+            RunOnMainThread(() =>
+            {
+                _state.PendingIdentity = _mod.Client.PendingIdentity;
+                _state.LastConnectError = _mod.Client.LastConnectError;
+                _state.LastConnectErrorCode = _mod.Client.LastConnectErrorCode;
+                if (ok) _state.SetStatus($"Connected to {_state.ServerHost}.");
+                else if (_state.PendingIdentity != null) _state.SetStatus(_state.PendingIdentity.Reason ?? "The server identity was not trusted.", true);
+                else if (!string.IsNullOrEmpty(_state.LastConnectError)) _state.SetStatus(_state.LastConnectError, true);
+                else _state.SetStatus("Could not connect to the server.", true);
+                _state.NotifyContent();
+            });
+        }
+
+        public void ReplaceServerIdentity()
+        {
+            ServerIdentityPrompt prompt = _state.PendingIdentity;
+            if (prompt == null || !prompt.IsChanged)
+            {
+                SetStatus("There is no changed server identity waiting for confirmation.", true);
+                return;
+            }
+
+            bool armed = string.Equals(_forgetArmedEndpointKey, prompt.EndpointKey, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(_forgetArmedFingerprint, prompt.PresentedFingerprint, StringComparison.OrdinalIgnoreCase) &&
+                         Time.unscaledTime - _forgetArmedAt <= 30f;
+            if (!armed)
+            {
+                _forgetArmedEndpointKey = prompt.EndpointKey;
+                _forgetArmedFingerprint = prompt.PresentedFingerprint;
+                _forgetArmedAt = Time.unscaledTime;
+                SetStatus("Press replace again within 30 seconds to trust the new fingerprint. The previous fingerprint stays on record.", true);
+                return;
+            }
+
+            if (!_mod.Client.TrustPendingIdentity())
+            {
+                SetStatus("The new server identity could not be accepted.", true);
+                return;
+            }
+            _forgetArmedEndpointKey = null;
+            _forgetArmedFingerprint = null;
+            SetStatus($"Trusting the new fingerprint for {prompt.DisplayAuthority}. Connecting...");
+            _state.NotifyContent();
+            _ = ConnectAndReportAsync(_host, _port, ModSettings.PlayerName, _pendingRegistrationPassword, _pendingCreateAccount);
+        }
+
+        public void TrustServer()
+        {
+            ServerIdentityPrompt prompt = _state.PendingIdentity;
+            if (prompt == null || !prompt.IsTrustPrompt)
+            {
+                SetStatus("There is no server identity waiting for your decision.", true);
+                return;
+            }
+            if (!_mod.Client.TrustPendingIdentity())
+            {
+                SetStatus("The server identity could not be saved.", true);
+                return;
+            }
+            _state.PendingIdentity = null;
+            _forgetArmedEndpointKey = null;
+            SetStatus($"Trusted {prompt.DisplayAuthority} on this device. Connecting...");
+            _state.NotifyContent();
+            _ = ConnectAndReportAsync(_host, _port, ModSettings.PlayerName, _pendingRegistrationPassword, _pendingCreateAccount);
+        }
+
+        public void CancelIdentityPrompt()
+        {
+            _mod.Client.CancelPendingIdentity();
+            _state.PendingIdentity = null;
+            _forgetArmedEndpointKey = null;
+            _forgetArmedFingerprint = null;
+            SetStatus("Connection cancelled. The server identity was not trusted.");
+            _state.NotifyContent();
+        }
+
+        public void ForgetTrustedServer(string endpointKey)
+        {
+            if (string.IsNullOrWhiteSpace(endpointKey)) return;
+            bool armed = string.Equals(_forgetArmedEndpointKey, endpointKey, StringComparison.OrdinalIgnoreCase) &&
+                         Time.unscaledTime - _forgetArmedAt <= 30f;
+            if (!armed)
+            {
+                _forgetArmedEndpointKey = endpointKey;
+                _forgetArmedAt = Time.unscaledTime;
+                SetStatus("Press the same remove button again within 30 seconds to forget this trusted fingerprint.", true);
+                return;
+            }
+            _forgetArmedEndpointKey = null;
+            _mod.Client.ForgetPin(endpointKey);
+            _state.PendingIdentity = null;
+            SetStatus("Trusted fingerprint removed. Connect again to compare and trust an identity.");
+            _state.NotifyContent();
+        }
+
+        public void Disconnect()
+        {
+            _mod.Client.Disconnect();
+            _state.ResetConnection();
+            _state.SetStatus("Disconnected.");
+            _state.NotifyContent();
+        }
+
+        public void RefreshServers()
+        {
+            string url = ModSettings.DirectoryUrl;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                _state.Servers.Clear();
+                SetStatus("No server directory configured.", true);
+                return;
+            }
+
+            _state.LoadingServers = true;
+            _state.NotifyContent();
+            _ = LoadServersAsync(url);
+        }
+
+        private async Task LoadServersAsync(string url)
+        {
+            var servers = await _directory.ListAsync(url).ConfigureAwait(false);
+            RunOnMainThread(() =>
+            {
+                _state.Servers.Clear();
+                _state.Servers.AddRange(servers);
+                _state.LoadingServers = false;
+                _state.SetStatus(servers.Count == 0 ? "The directory returned no servers." : $"Directory returned {servers.Count} server(s).");
+                _state.NotifyContent();
+            });
+        }
+
+        public void RefreshWorlds()
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            _state.LoadingWorlds = true;
+            _state.NotifyContent();
+            _ = _mod.Client.SendAsync(PacketType.WorldListRequest, new { });
+        }
+
+        public void CreateWorld(string name, bool isPublic)
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            string trimmed = (name ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+            {
+                SetStatus("Enter a world name.", true);
+                return;
+            }
+            if (trimmed.Length > 48)
+            {
+                SetStatus("World names are limited to 48 characters.", true);
+                return;
+            }
+            _ = _mod.Client.SendAsync(PacketType.WorldCreate, new WorldCreatePacket { Name = trimmed, IsPublic = isPublic });
+            SetStatus(isPublic ? "Creating a public world..." : "Creating a private world...");
+        }
+
+        public void JoinWorld(string worldId, string worldName)
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(worldId)) return;
+            _state.CurrentWorldName = worldName;
+            _ = _mod.Client.SendAsync(PacketType.WorldJoin, new WorldJoinPacket { WorldId = worldId });
+            SetStatus($"Joining {worldName ?? worldId}...");
+        }
+
+        public void LeaveWorld()
+        {
+            _state.CurrentWorldId = null;
+            _state.CurrentWorldName = null;
+            _state.CurrentWorldBuilds = 0;
+            _state.CurrentWorldPlayers = 0;
+            _state.LocalClaimId = null;
+            _state.PendingVote = null;
+            _mod.Builds.ResetWorld();
+            SetStatus("Left the world.");
+            _state.NotifyContent();
+            _ = LeaveWorldOnServerAsync();
+        }
+
+        private async Task LeaveWorldOnServerAsync() => await _mod.Client.LeaveWorldAsync();
+
+        public void SendChat(string message)
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            string trimmed = (message ?? string.Empty).Trim();
+            if (trimmed.Length == 0) return;
+            if (trimmed.Length > 512) trimmed = trimmed.Substring(0, 512);
+            _ = _mod.Client.SendAsync(PacketType.ChatMessage, new ChatMessagePacket { WorldId = _state.CurrentWorldId, Message = trimmed });
+        }
+
+        public void ClearChat()
+        {
+            _state.Chat.Clear();
+            _state.NotifyContent();
+        }
+
+        public void ClaimToggle()
+        {
+            if (!_state.Connected || string.IsNullOrEmpty(_state.CurrentWorldId))
+            {
+                SetStatus("Join a world first.", true);
+                return;
+            }
+            string buildId = _mod.Builds.LocalBuildId;
+            if (string.IsNullOrEmpty(buildId))
+            {
+                SetStatus("Build something in this world first.", true);
+                return;
+            }
+            if (!string.IsNullOrEmpty(_state.LocalClaimId))
+            {
+                _ = _mod.Client.SendAsync(PacketType.ClaimRemove, new ClaimRemovePacket { WorldId = _state.CurrentWorldId, ClaimId = _state.LocalClaimId });
+                SetStatus("Releasing claim...");
+                return;
+            }
+            _ = _mod.Client.SendAsync(PacketType.ClaimCreate, new ClaimCreatePacket { WorldId = _state.CurrentWorldId, Shape = ClaimShape.Build, BuildId = buildId });
+            SetStatus("Claiming your build...");
+        }
+
+        public void RequestTimewarp(double multiplier)
+        {
+            if (!_state.Connected || string.IsNullOrEmpty(_state.CurrentWorldId))
+            {
+                SetStatus("Join a world to control time warp.", true);
+                return;
+            }
+            _ = _mod.Client.SendAsync(PacketType.TimeWarpRequest, new TimeWarpRequestPacket { WorldId = _state.CurrentWorldId, RequestedMultiplier = multiplier });
+            SetStatus($"Requested {multiplier:0.##}x time warp.");
+        }
+
+        public void AnswerVote(bool approved)
+        {
+            TimeWarpVotePacket vote = _state.PendingVote;
+            if (vote == null) return;
+            _state.PendingVote = null;
+            _ = _mod.Client.SendAsync(PacketType.TimeWarpVoteResponse, new TimeWarpVoteResponsePacket
+            {
+                WorldId = vote.WorldId,
+                VoteId = vote.VoteId,
+                Approved = approved
+            });
+            SetStatus(approved ? "Time warp vote approved." : "Time warp vote rejected.");
+        }
+
+        public void RefreshFriends()
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            _mod.Friends.RefreshFriendsList();
+            _state.NotifyContent();
+        }
+
+        public void AddFriend(string playerName)
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            string trimmed = (playerName ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+            {
+                SetStatus("Enter a player name.", true);
+                return;
+            }
+            _mod.Friends.SendFriendRequest(trimmed);
+            SetStatus($"Friend request sent to {trimmed}.");
+            _state.NotifyContent();
+        }
+
+        public void RespondFriend(string playerId, bool accept)
+        {
+            if (string.IsNullOrEmpty(playerId)) return;
+            _mod.Friends.RespondToRequest(playerId, accept);
+            SetStatus(accept ? "Friend request accepted." : "Friend request declined.");
+            _state.NotifyContent();
+        }
+
+        public void InviteFriend(string playerName)
+        {
+            if (string.IsNullOrEmpty(_state.CurrentWorldId))
+            {
+                SetStatus("Join a world before inviting friends.", true);
+                return;
+            }
+            _mod.Friends.InviteFriendToCurrentWorld(playerName);
+            SetStatus($"Invited {playerName} to this world.");
+        }
+
+        public void SaveProfile(ProfileUpdatePacket update)
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            _ = _mod.Client.UpdateProfileAsync(update);
+            SetStatus("Saving profile...");
+        }
+
+        public void AcceptPendingInvite()
+        {
+            if (string.IsNullOrEmpty(_state.PendingInviteWorldId)) return;
+            JoinWorld(_state.PendingInviteWorldId, "invited world");
+            _state.PendingInviteWorldId = null;
+            _state.PendingInviteFrom = null;
+            _state.NotifyContent();
+        }
+
+        public void HostLocalServer()
+        {
+            string executable = ModSettings.ServerExecutablePath;
+            if (string.IsNullOrWhiteSpace(executable))
+            {
+                SetStatus("Set the dedicated server path in Settings first.", true);
+                return;
+            }
+            if (!System.IO.File.Exists(executable))
+            {
+                SetStatus("The configured server executable was not found.", true);
+                return;
+            }
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = executable,
+                    WorkingDirectory = System.IO.Path.GetDirectoryName(executable),
+                    UseShellExecute = true
+                });
+                SetStatus("Dedicated server launched.");
+            }
+            catch (Exception e)
+            {
+                SetStatus("Could not launch the server: " + e.Message, true);
+            }
+        }
+
+        public void SetStatus(string text, bool isError = false) => _state.SetStatus(text, isError);
+
+        private void OnPacket(PacketType type, string json)
+        {
+            switch (type)
+            {
+                case PacketType.AuthResult:
+                {
+                    AuthResultPacket auth = Newtonsoft.Json.JsonConvert.DeserializeObject<AuthResultPacket>(json);
+                    if (auth == null || !auth.Accepted)
+                    {
+                        _state.Connected = false;
+                        SetStatus(auth == null ? "Authentication failed." : (auth.RejectReason ?? "Authentication failed."), true);
+                        _state.NotifyContent();
+                        break;
+                    }
+                    _state.Connected = true;
+                    _state.PlayerId = auth.PlayerId;
+                    SetStatus("Connected.");
+                    _state.NotifyContent();
+                    _ = _mod.Client.SendAsync(PacketType.FriendListRequest, null);
+                    _ = _mod.Client.SendAsync(PacketType.ServerInfoRequest, new { });
+                    break;
+                }
+                case PacketType.ServerInfoResponse:
+                {
+                    ServerInfoResponsePacket info = Newtonsoft.Json.JsonConvert.DeserializeObject<ServerInfoResponsePacket>(json);
+                    if (info == null) break;
+                    _state.ServerName = info.ServerName;
+                    _state.ServerPlayers = info.OnlinePlayers;
+                    _state.ServerMaxPlayers = info.MaxPlayers;
+                    _state.Notify();
+                    break;
+                }
+                case PacketType.WorldListResponse:
+                {
+                    WorldListResponsePacket list = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldListResponsePacket>(json);
+                    if (list == null)
+                    {
+                        _state.LoadingWorlds = false;
+                        SetStatus("The world list was unavailable.", true);
+                        _state.NotifyContent();
+                        break;
+                    }
+                    _state.Worlds.Clear();
+                    if (list.Worlds != null) _state.Worlds.AddRange(list.Worlds);
+                    _state.LoadingWorlds = false;
+
+                    if (!string.IsNullOrEmpty(_state.CurrentWorldId))
+                    {
+                        WorldSummary current = _state.Worlds.FirstOrDefault(w => w.WorldId == _state.CurrentWorldId);
+                        if (current != null)
+                        {
+                            _state.CurrentWorldName = current.Name;
+                            _state.CurrentWorldBuilds = current.BuildCount;
+                            _state.CurrentWorldPlayers = current.PlayersOnline;
+                        }
+                    }
+                    SetStatus($"Found {_state.Worlds.Count} public world(s).");
+                    _state.NotifyContent();
+                    break;
+                }
+                case PacketType.WorldJoinAck:
+                {
+                    WorldJoinAckPacket join = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(json);
+                    if (join == null)
+                    {
+                        SetStatus("The world response was invalid.", true);
+                        break;
+                    }
+                    if (!join.Accepted)
+                    {
+                        SetStatus("Join failed: " + join.RejectReason, true);
+                        break;
+                    }
+                    _state.CurrentWorldId = join.WorldId;
+                    WorldSummary summary = _state.Worlds.FirstOrDefault(w => w.WorldId == join.WorldId);
+                    if (summary != null) _state.CurrentWorldName = summary.Name;
+                    _state.CurrentWorldBuilds = join.Builds == null ? 0 : join.Builds.Count;
+                    _state.CurrentWorldPlayers = join.PlayersOnline == null ? 0 : join.PlayersOnline.Count;
+                    _state.LocalClaimId = FindOwnClaim(join);
+                    _state.PendingInviteWorldId = null;
+                    _state.PendingInviteFrom = null;
+                    SetStatus($"In {_state.RoomLabel()} ({_state.CurrentWorldBuilds} builds).");
+                    _state.NotifyContent();
+                    break;
+                }
+                case PacketType.ChatMessage:
+                {
+                    ChatMessagePacket chat = Newtonsoft.Json.JsonConvert.DeserializeObject<ChatMessagePacket>(json);
+                    if (chat == null) break;
+                    _chatSequence++;
+                    _state.Chat.Add(new ChatLine
+                    {
+                        From = chat.FromPlayerName,
+                        Text = chat.Message,
+                        Scope = string.IsNullOrEmpty(chat.WorldId) ? "lobby" : "room",
+                        Sequence = _chatSequence
+                    });
+                    while (_state.Chat.Count > 60) _state.Chat.RemoveAt(0);
+                    _state.NotifyContent();
+                    break;
+                }
+                case PacketType.FriendListResponse:
+                    _state.NotifyContent();
+                    break;
+                case PacketType.ClaimCreate:
+                {
+                    ClaimInfo claim = Newtonsoft.Json.JsonConvert.DeserializeObject<ClaimInfo>(json);
+                    if (claim != null && claim.OwnerPlayerId == _state.PlayerId && claim.BuildId == _mod.Builds.LocalBuildId)
+                    {
+                        _state.LocalClaimId = claim.ClaimId;
+                        SetStatus("Your build is claimed.");
+                        _state.NotifyContent();
+                    }
+                    break;
+                }
+                case PacketType.ClaimRemove:
+                {
+                    ClaimRemovePacket removed = Newtonsoft.Json.JsonConvert.DeserializeObject<ClaimRemovePacket>(json);
+                    if (removed != null && removed.ClaimId == _state.LocalClaimId)
+                    {
+                        _state.LocalClaimId = null;
+                        SetStatus("Claim released.");
+                        _state.NotifyContent();
+                    }
+                    break;
+                }
+                case PacketType.FriendInviteToWorld:
+                {
+                    FriendInviteToWorldPacket invite = Newtonsoft.Json.JsonConvert.DeserializeObject<FriendInviteToWorldPacket>(json);
+                    if (invite != null && !string.IsNullOrEmpty(invite.WorldId))
+                    {
+                        _state.PendingInviteWorldId = invite.WorldId;
+                        _state.PendingInviteFrom = invite.TargetPlayerName;
+                        SetStatus($"World invite from {invite.TargetPlayerName}.");
+                        _state.NotifyContent();
+                    }
+                    break;
+                }
+                case PacketType.TimeWarpVote:
+                {
+                    TimeWarpVotePacket vote = Newtonsoft.Json.JsonConvert.DeserializeObject<TimeWarpVotePacket>(json);
+                    if (vote == null) break;
+                    _state.PendingVote = vote;
+                    _state.NotifyContent();
+                    Navigate(AppShell.WorldsPageId);
+                    break;
+                }
+                case PacketType.TimeWarpResult:
+                {
+                    TimeWarpResultPacket result = Newtonsoft.Json.JsonConvert.DeserializeObject<TimeWarpResultPacket>(json);
+                    if (result == null) break;
+                    _state.PendingVote = null;
+                    SetStatus(result.Approved ? $"Time warp is now {result.ActualMultiplier:0.##}x." : result.Reason);
+                    _state.NotifyContent();
+                    break;
+                }
+                case PacketType.PlayerConnected:
+                {
+                    PlayerPresencePacket presence = Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerPresencePacket>(json);
+                    if (presence != null) SetStatus($"{presence.PlayerName} connected.");
+                    _state.NotifyContent();
+                    _ = _mod.Client.SendAsync(PacketType.FriendListRequest, null);
+                    break;
+                }
+                case PacketType.PlayerDisconnected:
+                {
+                    PlayerPresencePacket presence = Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerPresencePacket>(json);
+                    if (presence != null) SetStatus($"{presence.PlayerName} disconnected.");
+                    _state.NotifyContent();
+                    _ = _mod.Client.SendAsync(PacketType.FriendListRequest, null);
+                    break;
+                }
+                case PacketType.AuthError:
+                {
+                    AuthErrorPacket error = Newtonsoft.Json.JsonConvert.DeserializeObject<AuthErrorPacket>(json);
+                    _state.Connected = false;
+                    SetStatus(error == null ? "Authentication failed." : error.Message, true);
+                    _state.NotifyContent();
+                    break;
+                }
+                case PacketType.Error:
+                {
+                    ErrorPacket error = Newtonsoft.Json.JsonConvert.DeserializeObject<ErrorPacket>(json);
+                    SetStatus(error == null ? "The server reported an error." : error.Message, true);
+                    break;
+                }
+            }
+        }
+
+        private string FindOwnClaim(WorldJoinAckPacket join)
+        {
+            if (join.Claims == null || string.IsNullOrEmpty(_state.PlayerId)) return null;
+            string localBuild = _mod.Builds.LocalBuildId;
+            foreach (ClaimInfo claim in join.Claims)
+            {
+                if (claim == null) continue;
+                if (claim.Shape != ClaimShape.Build) continue;
+                if (claim.OwnerPlayerId != _state.PlayerId) continue;
+                if (string.IsNullOrEmpty(localBuild) || claim.BuildId == localBuild) return claim.ClaimId;
+            }
+            return null;
+        }
     }
 }

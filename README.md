@@ -10,9 +10,9 @@ The project is designed around the native SFS modding APIs and a clean separatio
 - Modal multiplayer UI that follows native SFS menu behavior
 - Direct server connection with optional port override
 - `_sfs._tcp` SRV discovery when no port is supplied
-- TLS-protected multiplayer transport
-- Persistent server-issued player authentication tokens
-- TLS certificate fingerprint pinning and first-connection trust
+- Encrypted UDP transport with a sealed application-layer channel (no TLS)
+- Persistent server-issued player authentication tokens, scoped per server endpoint
+- Server identity fingerprint pinning per endpoint, with explicit first-connection trust
 - Public server directory and server browser
 - Persistent shared worlds
 - Multiple independently synchronized builds per world
@@ -30,8 +30,9 @@ The project is designed around the native SFS modding APIs and a clean separatio
 | Multiplayer menu | Active development |
 | Server discovery | Implemented |
 | SRV endpoint resolution | Implemented |
-| TLS transport | Implemented |
-| Persistent authentication | Implemented |
+| Transport | Lidgren UDP with a sealed application-layer channel |
+| Server identity pinning | Implemented, first connection requires explicit trust |
+| Persistent authentication | Implemented, explicit sign-in vs account creation |
 | Shared worlds | Implemented with authoritative world clock |
 | Multi-build synchronization | Live state replication and interpolation |
 | Friends and invites | Implemented foundation |
@@ -51,11 +52,17 @@ The connection form accepts a normal hostname. A port override is optional. With
 
 ## Security
 
-Multiplayer traffic is not sent as plaintext TCP. The server creates or loads a TLS certificate and the client establishes a TLS session before the SFS Enhanced protocol begins.
+Multiplayer traffic is not plaintext. There is **no TLS**: the transport is Lidgren UDP, and the protocol runs its own sealed channel on top of it. Each connection performs a P-256 ephemeral and static ECDH handshake, derives a per-session pre-master, and seals every packet with AES-CTR plus an HMAC tag and a replay window.
 
-Player authentication uses persistent opaque server-issued tokens. Tokens are stored server-side as SHA-256 hashes and are transmitted only inside the TLS connection.
+Player authentication uses persistent opaque server-issued tokens. The server stores only `SHA-256(token)`. The raw token never crosses the wire: the client sends an HMAC proof over the handshake transcript, and the token is stored locally per server endpoint.
 
-The client supports certificate fingerprint pinning. Public directory listings can publish the server certificate fingerprint so a client can verify the endpoint it connects to. Direct connections use first-connection trust when no fingerprint has previously been configured.
+Signing in and creating an account are separate actions. A token login only authenticates an account that already exists on that server; a name the server has never seen is refused with an explicit "no account here" result and creates nothing. Accounts are created only by the explicit *Create account* action, which the server accepts only when registration is open and, if configured, the registration password check succeeds. The client never switches silently from signing in to registering.
+
+Registration passwords are never sent in the clear. When a server requires one, it asks for the password proof inside the sealed channel, after the client has validated the server's pinned identity key; an untrusted or impersonating endpoint cannot read it. The password hash is salted per server instance (`data/system/registration_salt.json`). This removes passive capture and cross-server precomputation, but it is not a PAKE: any server that verifies a password can still test guesses offline, so registration passwords are not claimed to be attacker-proof.
+
+The server holds a long-lived P-256 identity key in `data/system/server_static_key.json` and prints its fingerprint at startup. The client recomputes that fingerprint from the static public key it received, and pins it per endpoint (`host:port`, or `host` when the port comes from SRV). Before a server is trusted on a device, the client sends nothing beyond its ephemeral public key: no token proof, no registration secret, and no account is created. Pinning is **not** a substitute for authentication on first contact. Trust-on-first-use cannot detect an on-path attacker who is present the first time you connect; only comparing the fingerprint out of band (the server console prints it) does. A pinned endpoint can never change identity silently: a mismatch is refused, and replacing the pin is a separate, deliberate action.
+
+Public directory listings do not carry a trusted fingerprint, and a listing is not proof that anyone controls the endpoint.
 
 This security model is intentionally separate from gameplay authorization. The server remains authoritative for worlds, builds, claims, player identity, and social actions.
 
@@ -73,7 +80,7 @@ SFS Enhanced
 │   ├── protocol
 │   └── shared models
 ├── Server
-│   ├── TLS networking
+│   ├── UDP networking with a sealed channel
 │   ├── accounts
 │   ├── worlds
 │   ├── builds
@@ -106,7 +113,7 @@ Self-contained publishing is available through the existing Windows and Linux pu
 
 A server can advertise through a self-hosted directory with `--advertise`, `--directory`, `--public-host`, and `--region`.
 
-The server generates a TLS certificate at first launch when one is not supplied. The generated certificate fingerprint is printed to the server console and can be published with the server listing.
+The server generates an identity key at first launch when one does not exist and prints its fingerprint at startup and in `status`. Treat `data/system/server_static_key.json` as durable state: back it up, and never regenerate it casually, because a new key looks like a changed server identity to every client that trusted the old one.
 
 ## Development workflow
 

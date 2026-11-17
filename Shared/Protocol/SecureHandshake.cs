@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using SFSEnhanced.Shared.Models;
 
 namespace SFSEnhanced.Shared.Protocol
 {
@@ -14,13 +15,35 @@ namespace SFSEnhanced.Shared.Protocol
         public byte[] Data;
     }
 
+    public enum ServerIdentityDecision
+    {
+        Trusted,
+        FirstUse,
+        Changed,
+        Unreadable
+    }
+
+    public interface IServerIdentityGate
+    {
+        string EndpointKey { get; }
+        ServerIdentityDecision Evaluate(ServerIdentity identity, out string pinnedFingerprint);
+    }
+
     public sealed class SecureHandshakeResult
     {
         public bool Accepted;
         public string RejectReason;
+        public string ErrorCode;
         public string PlayerId;
         public string IssuedToken;
         public SecureChannel Channel;
+        public ServerIdentity Identity;
+        public ServerIdentityStatus IdentityStatus;
+        public ServerIdentityDecision IdentityDecision;
+        public string CanonicalEndpointKey;
+        public string PresentedFingerprint;
+        public string PresentedShortFingerprint;
+        public string PinnedFingerprint;
     }
 
     public interface ISecureTransport
@@ -60,9 +83,12 @@ namespace SFSEnhanced.Shared.Protocol
             _transport = transport;
         }
 
-        public async Task<SecureHandshakeResult> RunAsync(string playerName, string authToken, string clientModVersion, string registrationPassword, CancellationToken ct)
+        public async Task<SecureHandshakeResult> RunAsync(string playerName, string authToken, string clientModVersion, string registrationPassword, CancellationToken ct, IServerIdentityGate identityGate = null, bool createAccount = false)
         {
-            bool registerMode = !string.IsNullOrEmpty(registrationPassword);
+            if (!PlayerNameRules.TryCanonicalize(playerName, out string canonicalPlayerName, out string nameError))
+                return Reject(nameError, AuthErrorCode.NameInvalid);
+            playerName = canonicalPlayerName;
+            bool registerMode = createAccount;
             var clientNonce = SessionAuth.RandomBytes(SessionAuth.NonceBytes);
             await _transport.SendPlainAsync(PacketType.Hello, new HelloPacket
             {
@@ -76,7 +102,7 @@ namespace SFSEnhanced.Shared.Protocol
             (bool ok, PacketType type, string json) ack = await ReceivePlainAsync(ct).ConfigureAwait(false);
             if (!ack.ok) return Reject("Connection closed during handshake.");
             if (ack.type == PacketType.AuthError)
-                return Reject(ExtractMessage(ack.json) ?? "Authentication failed.");
+                return Reject(ExtractMessage(ack.json) ?? "Authentication failed.", ExtractCode(ack.json));
             if (ack.type != PacketType.HelloAck)
                 return Reject("Expected a handshake challenge.");
 
@@ -90,6 +116,8 @@ namespace SFSEnhanced.Shared.Protocol
                 return Reject("Server did not echo the client nonce.");
             if (ackPacket.ExchangeIdentifier == null || ackPacket.ExchangeIdentifier.Length != SessionAuth.SessionIdBytes)
                 return Reject("Server exchange identifier was invalid.");
+            if (registerMode && ackPacket.RegistrationPasswordRequired && string.IsNullOrEmpty(registrationPassword))
+                return Reject("This server requires a registration password to create an account. Enter it to continue.", AuthErrorCode.RegistrationPasswordRequired);
 
             byte[] privateKey = P256.GeneratePrivateKey();
             P256.PublicPoint(privateKey, out byte[] clientX, out byte[] clientY);
@@ -103,7 +131,7 @@ namespace SFSEnhanced.Shared.Protocol
             (bool keysOk, PacketType keysType, string keysJson) = await ReceivePlainAsync(ct).ConfigureAwait(false);
             if (!keysOk) return Reject("Connection closed while deriving session keys.");
             if (keysType == PacketType.AuthError)
-                return Reject(ExtractMessage(keysJson) ?? "Authentication failed.");
+                return Reject(ExtractMessage(keysJson) ?? "Authentication failed.", ExtractCode(keysJson));
             if (keysType != PacketType.AuthChallenge)
                 return Reject("Expected the server ephemeral key.");
 
@@ -115,14 +143,33 @@ namespace SFSEnhanced.Shared.Protocol
             if (!SessionAuth.FixedTimeEquals(challenge.ExchangeIdentifier, ackPacket.ExchangeIdentifier))
                 return Reject("Server exchange identifier did not match.");
 
+            ServerIdentity identity = ServerIdentityCalculator.FromStaticPoint(challenge.StaticX, challenge.StaticY);
+            if (!identity.Valid)
+                return IdentityReject(identity, ServerIdentityDecision.Trusted, null, null, identity.Error);
+
+            ServerIdentityDecision decision = ServerIdentityDecision.Trusted;
+            string pinnedFingerprint = null;
+            if (identityGate != null)
+            {
+                decision = identityGate.Evaluate(identity, out pinnedFingerprint);
+                if (decision == ServerIdentityDecision.FirstUse)
+                    return IdentityReject(identity, decision, identityGate.EndpointKey, pinnedFingerprint,
+                        "This server's identity has not been trusted on this device. Verify its fingerprint out of band before connecting.");
+                if (decision == ServerIdentityDecision.Changed)
+                    return IdentityReject(identity, decision, identityGate.EndpointKey, pinnedFingerprint,
+                        "This server's identity does not match the fingerprint trusted on this device. Refusing to connect.");
+                if (decision == ServerIdentityDecision.Unreadable)
+                    return IdentityReject(identity, decision, identityGate.EndpointKey, pinnedFingerprint,
+                        "The trusted server fingerprints stored on this device could not be read, so this server cannot be verified. Repair or clear the stored fingerprints before connecting.");
+            }
+
             byte[] ephemeralSecret = P256.DeriveSharedSecret(privateKey, challenge.EphemeralX, challenge.EphemeralY);
             if (ephemeralSecret == null)
                 return Reject("Server ephemeral key was not on the agreed curve.");
 
-            byte[] staticSecret = challenge.StaticX != null && challenge.StaticX.Length == SessionAuth.CoordinateBytes &&
-                                  challenge.StaticY != null && challenge.StaticY.Length == SessionAuth.CoordinateBytes
-                ? P256.DeriveSharedSecret(privateKey, challenge.StaticX, challenge.StaticY) ?? new byte[32]
-                : new byte[32];
+            byte[] staticSecret = P256.DeriveSharedSecret(privateKey, challenge.StaticX, challenge.StaticY);
+            if (staticSecret == null)
+                return Reject("The server identity key could not be used for the key exchange.");
 
             byte[] transcriptHash = SessionAuth.ComputeTranscriptHash(clientNonce, ackPacket.ServerChallenge, clientX, clientY, challenge.EphemeralX, challenge.EphemeralY, challenge.StaticX, challenge.StaticY, playerName);
             byte[] tokenKey = SessionAuth.ComputeTokenKey(authToken);
@@ -131,33 +178,78 @@ namespace SFSEnhanced.Shared.Protocol
             byte[] sessionId = SessionAuth.DeriveSessionId(preMaster);
             var channel = SecureChannel.FromPreMaster(preMaster, sessionId, isServer: false);
 
-            byte[] registrationSecret = registerMode
-                ? SessionAuth.ComputeRegistrationProof(SessionAuth.ComputePasswordHash(registrationPassword), transcriptHash)
-                : null;
-
             await _transport.SendPlainAsync(PacketType.AuthResponse, new AuthResponsePacket
             {
-                Proof = proof,
-                RegistrationSecret = registrationSecret
+                Proof = proof
             }, ct).ConfigureAwait(false);
 
-            (bool resultOk, PacketType resultType, string resultJson) = await ReceiveAnyAsync(channel, ct).ConfigureAwait(false);
-            if (!resultOk) return Reject("Connection closed before authentication completed.");
-            if (resultType == PacketType.AuthError)
-                return Reject(ExtractMessage(resultJson) ?? "Authentication failed.");
-            if (resultType != PacketType.AuthResult)
-                return Reject("Expected an authentication result.");
+            for (int round = 0; round < 4; round++)
+            {
+                (bool resultOk, PacketType resultType, string resultJson) = await ReceiveAnyAsync(channel, ct).ConfigureAwait(false);
+                if (!resultOk) return Reject("Connection closed before authentication completed.");
+                if (resultType == PacketType.AuthError)
+                    return Reject(ExtractMessage(resultJson) ?? "Authentication failed.", ExtractCode(resultJson));
+                if (resultType == PacketType.RegistrationPrompt)
+                {
+                    if (!registerMode)
+                        return Reject("The server asked for a registration password while signing in to an existing account. Refusing.", AuthErrorCode.HandshakeInvalid);
+                    if (!await AnswerRegistrationPromptAsync(channel, resultJson, registrationPassword, transcriptHash, ct).ConfigureAwait(false))
+                        return Reject("This server requires a registration password to create an account. Enter it to continue.", AuthErrorCode.RegistrationPasswordRequired);
+                    continue;
+                }
+                if (resultType != PacketType.AuthResult)
+                    return Reject("Expected an authentication result.");
 
-            var authResult = Deserialize<AuthResultPacket>(resultJson);
-            if (authResult == null || !authResult.Accepted)
-                return Reject(authResult == null ? "Server returned an invalid authentication result." : authResult.RejectReason);
+                var authResult = Deserialize<AuthResultPacket>(resultJson);
+                if (authResult == null || !authResult.Accepted)
+                    return Reject(authResult == null ? "Server returned an invalid authentication result." : authResult.RejectReason);
 
+                return new SecureHandshakeResult
+                {
+                    Accepted = true,
+                    PlayerId = authResult.PlayerId,
+                    IssuedToken = authResult.AuthToken,
+                    Channel = channel,
+                    Identity = identity,
+                    IdentityStatus = identity.Status,
+                    IdentityDecision = decision,
+                    CanonicalEndpointKey = identityGate?.EndpointKey,
+                    PresentedFingerprint = identity.Fingerprint,
+                    PresentedShortFingerprint = identity.ShortFingerprint,
+                    PinnedFingerprint = pinnedFingerprint
+                };
+            }
+
+            return Reject("The server asked for the registration password repeatedly.", AuthErrorCode.HandshakeInvalid);
+        }
+
+        private async Task<bool> AnswerRegistrationPromptAsync(SecureChannel channel, string json, string registrationPassword, byte[] transcriptHash, CancellationToken ct)
+        {
+            RegistrationPromptPacket prompt = Deserialize<RegistrationPromptPacket>(json);
+            if (prompt == null || !prompt.Required) return false;
+            if (string.IsNullOrEmpty(registrationPassword)) return false;
+            if (prompt.Salt == null || prompt.Salt.Length != SessionAuth.RegistrationSaltBytes) return false;
+
+            byte[] passwordHash = SessionAuth.ComputePasswordHashV2(registrationPassword, prompt.Salt);
+            byte[] registrationProof = SessionAuth.ComputeRegistrationProofV2(passwordHash, transcriptHash);
+            await _transport.SendSealedAsync(channel.Seal(PacketType.RegistrationAuth, new RegistrationAuthPacket { Proof = registrationProof }), ct).ConfigureAwait(false);
+            return true;
+        }
+
+        private static SecureHandshakeResult IdentityReject(ServerIdentity identity, ServerIdentityDecision decision, string endpointKey, string pinnedFingerprint, string reason)
+        {
             return new SecureHandshakeResult
             {
-                Accepted = true,
-                PlayerId = authResult.PlayerId,
-                IssuedToken = authResult.AuthToken,
-                Channel = channel
+                Accepted = false,
+                RejectReason = reason,
+                ErrorCode = decision == ServerIdentityDecision.Unreadable ? AuthErrorCode.IdentityStoreUnreadable : AuthErrorCode.IdentityUntrusted,
+                Identity = identity,
+                IdentityStatus = identity?.Status ?? ServerIdentityStatus.MissingKey,
+                IdentityDecision = decision,
+                CanonicalEndpointKey = endpointKey,
+                PresentedFingerprint = identity?.Fingerprint,
+                PresentedShortFingerprint = identity?.ShortFingerprint,
+                PinnedFingerprint = pinnedFingerprint
             };
         }
 
@@ -191,6 +283,20 @@ namespace SFSEnhanced.Shared.Protocol
         }
 
         private static SecureHandshakeResult Reject(string reason) => new SecureHandshakeResult { RejectReason = reason };
+
+        private static SecureHandshakeResult Reject(string reason, string code) => new SecureHandshakeResult { RejectReason = reason, ErrorCode = code };
+
+        private static string ExtractCode(string json)
+        {
+            try
+            {
+                return Newtonsoft.Json.JsonConvert.DeserializeObject<AuthErrorPacket>(json)?.Code;
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         private static T Deserialize<T>(string json) => json == null ? default : Newtonsoft.Json.JsonConvert.DeserializeObject<T>(json);
 

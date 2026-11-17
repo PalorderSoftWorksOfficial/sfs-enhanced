@@ -13,11 +13,22 @@ namespace SFSEnhanced.Server.Networking
     {
         private async Task HandleWorldCreate(ClientConnection conn, string playerId, WorldCreatePacket req)
         {
-            if (string.IsNullOrWhiteSpace(req?.Name))
+            if (req == null || !IsValidWorldName(req.Name))
             {
-                await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "World name is required." });
+                await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "A world name of 1-64 characters without control characters is required." });
                 return;
             }
+            if (!string.IsNullOrEmpty(req.PlanetPackId) && !IsValidLabel(req.PlanetPackId, 64))
+            {
+                await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "The planet pack id must be 1-64 characters without control characters." });
+                return;
+            }
+            if (!TryConsume(playerId, "world-create", 3, 0.2))
+            {
+                await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "You are creating worlds too quickly. Wait a moment and retry." });
+                return;
+            }
+
             HandleWorldLeave(conn, playerId);
             var world = _worlds.Create(req.Name.Trim(), playerId, req.IsPublic, req.PlanetPackId);
             conn.CurrentWorldId = world.WorldId;
@@ -28,13 +39,19 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task HandleWorldJoin(ClientConnection conn, string playerId, WorldJoinPacket req)
         {
+            if (!TryConsume(playerId, "world-join", 10, 1.0))
+            {
+                await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "You are joining worlds too quickly. Wait a moment and retry." });
+                return;
+            }
+
             var world = req == null ? null : _worlds.Get(req.WorldId);
             if (world == null)
             {
                 await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "World not found." });
                 return;
             }
-            if (!world.IsPublic && world.OwnerPlayerId != playerId && !_friends.AreFriends(world.OwnerPlayerId, playerId) && !world.Whitelist.Contains(playerId))
+            if (!CanAccessWorld(world, playerId))
             {
                 await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "This world is private." });
                 return;
@@ -50,61 +67,123 @@ namespace SFSEnhanced.Server.Networking
 
         private void HandleWorldLeave(ClientConnection conn, string playerId)
         {
+            string worldId = conn.CurrentWorldId;
             conn.CurrentWorldId = null;
-            if (playerId != null) _friends.SetCurrentWorld(playerId, null);
+            if (playerId != null)
+            {
+                _friends.SetCurrentWorld(playerId, null);
+                ReleaseControlledBuilds(worldId, playerId);
+            }
         }
 
         private async Task HandleWorldUploadChunk(ClientConnection conn, string playerId, WorldUploadChunkPacket chunk)
         {
-            if (chunk == null || string.IsNullOrEmpty(chunk.UploadId) || chunk.TotalChunks <= 0 || chunk.ChunkIndex < 0 || chunk.ChunkIndex >= chunk.TotalChunks || string.IsNullOrEmpty(chunk.Base64Data))
+            if (chunk == null || string.IsNullOrEmpty(chunk.UploadId) || chunk.TotalChunks <= 0 || chunk.TotalChunks > MaxUploadChunks ||
+                chunk.ChunkIndex < 0 || chunk.ChunkIndex >= chunk.TotalChunks || string.IsNullOrEmpty(chunk.Base64Data))
             {
                 await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Invalid upload chunk." });
                 return;
             }
+            if (chunk.Base64Data.Length > MaxUploadChunkBytes)
+            {
+                AbortUpload(playerId, chunk.UploadId);
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload chunk is larger than the server allows." });
+                return;
+            }
+            if (!TryConsume(playerId, "world-upload", 120, 40))
+            {
+                AbortUpload(playerId, chunk.UploadId);
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload is arriving too fast. Wait a moment and retry." });
+                return;
+            }
+            string activeUpload = _activeUploads.TryGetValue(playerId, out string active) ? active : null;
+            bool continuingActive = string.Equals(activeUpload, chunk.UploadId, StringComparison.Ordinal);
+            if (chunk.ChunkIndex == 0 && !continuingActive)
+            {
+                if (activeUpload != null)
+                {
+                    await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Finish the current upload before starting another." });
+                    return;
+                }
+                if (_pendingUploads.Count >= Math.Max(1, _config.UploadMaxConcurrent))
+                {
+                    await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Too many uploads are in progress on this server. Try again shortly." });
+                    return;
+                }
+                _activeUploads[playerId] = chunk.UploadId;
+            }
+
             string uploadKey = playerId + ":" + chunk.UploadId;
-            var buffer = _pendingUploads.GetOrAdd(uploadKey, _ => new List<string>(new string[chunk.TotalChunks]));
+            var buffer = _pendingUploads.GetOrAdd(uploadKey, _ => new UploadBuffer
+            {
+                PlayerId = playerId,
+                UploadId = chunk.UploadId,
+                TotalChunks = chunk.TotalChunks
+            });
             bool invalid;
-            lock (buffer) invalid = buffer.Count != chunk.TotalChunks;
+            lock (buffer)
+            {
+                invalid = buffer.TotalChunks != chunk.TotalChunks || chunk.ChunkIndex != buffer.NextIndex ||
+                          buffer.Bytes + chunk.Base64Data.Length > MaxUploadBytes;
+                if (!invalid)
+                {
+                    buffer.Chunks.Add(chunk.Base64Data);
+                    buffer.Bytes += chunk.Base64Data.Length;
+                    buffer.NextIndex++;
+                    buffer.LastActivityUtc = DateTime.UtcNow;
+                }
+            }
             if (invalid)
             {
-                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload chunk count mismatch." });
+                AbortUpload(playerId, chunk.UploadId);
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload chunks must arrive in order, exactly once, and within the server's size limit." });
                 return;
             }
-            lock (buffer) buffer[chunk.ChunkIndex] = chunk.Base64Data;
             bool complete;
-            lock (buffer) complete = buffer.All(b => b != null);
+            lock (buffer) complete = buffer.NextIndex == buffer.TotalChunks;
             if (!complete) return;
-            string fullJson;
-            lock (buffer) fullJson = Encoding.UTF8.GetString(Convert.FromBase64String(string.Concat(buffer)));
-            WorldRecord uploaded;
-            try { uploaded = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldRecord>(fullJson); }
-            catch { await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "World upload is not valid JSON." }); return; }
-            if (uploaded == null)
+
+            WorldRecord uploaded = null;
+            string failure = null;
+            try
             {
-                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "World upload was empty." });
+                string fullJson = Encoding.UTF8.GetString(Convert.FromBase64String(string.Concat(buffer.Chunks)));
+                uploaded = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldRecord>(fullJson);
+                if (uploaded == null) failure = "World upload was empty.";
+                else failure = SfsWorldSanitizer.Sanitize(uploaded, playerId, conn.Account.PlayerName);
+            }
+            catch (FormatException)
+            {
+                failure = "World upload contained invalid base64 data.";
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                failure = "World upload is not valid JSON.";
+            }
+            catch (Exception)
+            {
+                failure = "World upload could not be read.";
+            }
+
+            if (failure != null || uploaded == null)
+            {
+                AbortUpload(playerId, chunk.UploadId);
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = failure ?? "World upload could not be read." });
                 return;
             }
-            var created = _worlds.Create(chunk.WorldName ?? uploaded.Name ?? "Uploaded World", playerId, chunk.IsPublic, uploaded.PlanetPackId);
-            created.Builds = uploaded.Builds ?? new List<BuildSnapshot>();
-            created.Claims = uploaded.Claims ?? new List<ClaimInfo>();
-            foreach (var build in created.Builds)
-            {
-                if (build == null) continue;
-                build.OwnerPlayerId = playerId;
-                build.OwnerPlayerName = conn.Account.PlayerName;
-            }
-            foreach (var claim in created.Claims)
-            {
-                if (claim == null) continue;
-                claim.OwnerPlayerId = playerId;
-                claim.OwnerPlayerName = conn.Account.PlayerName;
-            }
+
+            string worldName = SfsWorldSanitizer.SafeName(chunk.WorldName, SfsWorldSanitizer.MaxNameLength) ??
+                               SfsWorldSanitizer.SafeName(uploaded.Name, SfsWorldSanitizer.MaxNameLength) ??
+                               "Uploaded World";
+            var created = _worlds.Create(worldName, playerId, chunk.IsPublic, uploaded.PlanetPackId);
+            created.Builds = uploaded.Builds;
+            created.Claims = uploaded.Claims;
             _worlds.Persist(created.WorldId);
-            _pendingUploads.TryRemove(uploadKey, out _);
+            AbortUpload(playerId, chunk.UploadId);
             await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = true, WorldId = created.WorldId, Builds = created.Builds, Claims = created.Claims });
         }
 
-        private async Task HandleWorldDownloadRequest(ClientConnection conn, WorldJoinPacket req)
+        private async Task HandleWorldDownloadRequest(ClientConnection conn, string playerId, WorldJoinPacket req)
         {
             var world = req == null ? null : _worlds.Get(req.WorldId);
             if (world == null)
@@ -112,8 +191,24 @@ namespace SFSEnhanced.Server.Networking
                 await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "World not found." });
                 return;
             }
+            if (!CanAccessWorld(world, playerId))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "This world is private and you are not permitted to download it." });
+                return;
+            }
+            if (!TryConsume(playerId, "world-download", 2, 0.5))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Too many world downloads. Wait a moment and retry." });
+                return;
+            }
+
             string json = Newtonsoft.Json.JsonConvert.SerializeObject(world);
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+            if (base64.Length > MaxWorldDownloadBytes)
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "This world is larger than the download limit. Ask the operator to export it." });
+                return;
+            }
             const int chunkSize = 32 * 1024;
             int totalChunks = Math.Max(1, (int)Math.Ceiling(base64.Length / (double)chunkSize));
             for (int i = 0; i < totalChunks; i++)

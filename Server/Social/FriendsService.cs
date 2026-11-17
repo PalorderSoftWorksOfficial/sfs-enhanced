@@ -34,6 +34,7 @@ namespace SFSEnhanced.Server.Social
             var target = _accounts.FindByName(targetName);
             if (target == null) { error = "No player with that name has connected to this server yet."; return false; }
             if (target.PlayerId == requester.PlayerId) { error = "You can't friend yourself."; return false; }
+            if (target.Privacy != null && !target.Privacy.AllowFriendRequests) { error = "That player is not accepting friend requests."; return false; }
             if (requester.FriendPlayerIds.Contains(target.PlayerId)) { error = "Already friends."; return false; }
 
             if (!requester.OutgoingFriendRequests.Contains(target.PlayerId))
@@ -71,12 +72,15 @@ namespace SFSEnhanced.Server.Social
             FriendInfo ToInfo(string id)
             {
                 var acc = _accounts.FindById(id);
+                bool showPresence = acc == null || acc.Privacy == null || acc.Privacy.ShowPresence;
+                bool online = showPresence && _online.TryGetValue(id, out var on) && on;
+                string world = showPresence && _currentWorld.TryGetValue(id, out var w) ? w : null;
                 return new FriendInfo
                 {
                     PlayerId = id,
                     PlayerName = acc?.PlayerName ?? "(unknown)",
-                    Online = _online.TryGetValue(id, out var on) && on,
-                    CurrentWorldId = _currentWorld.TryGetValue(id, out var w) ? w : null,
+                    Online = online,
+                    CurrentWorldId = world,
                 };
             }
 

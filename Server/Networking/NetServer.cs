@@ -20,8 +20,9 @@ namespace SFSEnhanced.Server.Networking
         private readonly WorldManager _worlds;
         private readonly FriendsService _friends;
         private readonly ClaimsService _claims;
+        private readonly ProfileService _profiles;
         private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
-        private readonly ConcurrentDictionary<string, List<string>> _pendingUploads = new();
+        private readonly ConcurrentDictionary<string, UploadBuffer> _pendingUploads = new();
         private readonly ConcurrentDictionary<string, TimeWarpVoteState> _timeWarpVotes = new();
         private int _nextVoteId;
 
@@ -34,6 +35,7 @@ namespace SFSEnhanced.Server.Networking
             _worlds = worlds;
             _friends = friends;
             _claims = claims;
+            _profiles = new ProfileService(accounts, worlds);
         }
 
         public async Task RunAsync(CancellationToken ct)
@@ -64,6 +66,7 @@ namespace SFSEnhanced.Server.Networking
                 while (!ct.IsCancellationRequested)
                 {
                     await Task.Delay(250, ct);
+                    SweepExpiredUploads();
                     foreach (var world in _worlds.All().ToList())
                     {
                         AdvanceWorldTime(world);
@@ -112,16 +115,19 @@ namespace SFSEnhanced.Server.Networking
                 if (account == null)
                 {
                     Console.WriteLine("[auth-failed] handshake rejected");
+                    await Task.Delay(150).ConfigureAwait(false);
                     return;
                 }
                 playerId = account.PlayerId;
-                _accounts.Touch(account);
 
                 if (!_connections.ContainsKey(account.PlayerId) && _connections.Count >= _config.MaxPlayers)
                 {
                     await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Server is full." });
                     return;
                 }
+
+                account.SessionsCount++;
+                _accounts.Touch(account);
                 if (_connections.TryGetValue(account.PlayerId, out ClientConnection oldConnection) && !ReferenceEquals(oldConnection, conn))
                     oldConnection.Close();
                 _connections[account.PlayerId] = conn;
@@ -175,7 +181,7 @@ namespace SFSEnhanced.Server.Networking
                             await HandleWorldUploadChunk(conn, playerId, Deserialize<WorldUploadChunkPacket>(json));
                             break;
                         case PacketType.WorldDownloadRequest:
-                            await HandleWorldDownloadRequest(conn, Deserialize<WorldJoinPacket>(json));
+                            await HandleWorldDownloadRequest(conn, playerId, Deserialize<WorldJoinPacket>(json));
                             break;
                         case PacketType.BuildSpawn:
                             await HandleBuildSpawn(conn, playerId, Deserialize<BuildSnapshot>(json));
@@ -216,6 +222,12 @@ namespace SFSEnhanced.Server.Networking
                         case PacketType.ChatMessage:
                             await HandleChat(conn, Deserialize<ChatMessagePacket>(json));
                             break;
+                        case PacketType.ProfileRequest:
+                            await HandleProfileRequest(conn, Deserialize<ProfileRequestPacket>(json));
+                            break;
+                        case PacketType.ProfileUpdate:
+                            await HandleProfileUpdate(conn, Deserialize<ProfileUpdatePacket>(json));
+                            break;
                         case PacketType.TimeWarpVoteResponse:
                             await HandleTimeWarpVoteResponse(conn, playerId, Deserialize<TimeWarpVoteResponsePacket>(json));
                             break;
@@ -247,6 +259,9 @@ namespace SFSEnhanced.Server.Networking
                         _connections.TryRemove(playerId, out _);
                         _friends.SetOnline(playerId, false);
                     }
+                    _profileBuckets.TryRemove(playerId, out _);
+                    _activeUploads.TryRemove(playerId, out _);
+                    ReleaseRateBuckets(playerId);
                     Console.WriteLine($"[disconnect] {conn.Account?.PlayerName ?? playerId}");
                 }
                 conn.Close();

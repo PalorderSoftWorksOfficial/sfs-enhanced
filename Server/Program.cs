@@ -27,6 +27,8 @@ namespace SFSEnhanced.Server
         public bool AllowRegistration = true;
         public string RegistrationPassword;
         public string Transport = "LidgrenUdp";
+        public int UploadMaxConcurrent = 32;
+        public int UploadIdleSeconds = 120;
 
         public static ServerConfig Load(string path)
         {
@@ -69,6 +71,16 @@ namespace SFSEnhanced.Server
             Console.WriteLine($"Advertised: {config.Advertise}");
 
             var store = new FileStore(config.DataDir);
+            SecureSessionHandshake.InitializeStaticKey(store);
+            SecureSessionHandshake.InitializeRegistrationSalt(store);
+            Console.WriteLine($"Identity: {SecureSessionHandshake.IdentityFingerprint}");
+            Console.WriteLine($"Registration: {(config.AllowRegistration ? "open" : "closed")}, password {(string.IsNullOrEmpty(config.RegistrationPassword) ? "not required" : "required")}");
+            Console.WriteLine($"Uploads: {config.UploadMaxConcurrent} concurrent, {config.UploadIdleSeconds}s idle limit");
+            if (!string.IsNullOrEmpty(config.RegistrationPassword))
+                SecureSessionHandshake.RegistrationPasswordHash(config.RegistrationPassword);
+            if (config.AllowRegistration && string.IsNullOrEmpty(config.RegistrationPassword))
+                Console.WriteLine("Warning: registrations are open with no registration password, so a first-time client cannot authenticate this server. Publish the identity fingerprint above and have players compare it out of band before they trust it.");
+
             var accounts = new AccountService(store);
             var worlds = new WorldManager(store);
             var friends = new FriendsService(accounts);
@@ -96,7 +108,7 @@ namespace SFSEnhanced.Server
             while (!cts.IsCancellationRequested)
             {
                 string line = Console.ReadLine();
-                if (line == null) continue;
+                if (line == null) break;
                 switch (line.Trim().ToLowerInvariant())
                 {
                     case "stop":
@@ -112,6 +124,7 @@ namespace SFSEnhanced.Server
                         Console.WriteLine($"  {config.ServerName} on :{config.Port}");
                         Console.WriteLine($"  players={server.ConnectedPlayerCount}/{config.MaxPlayers}");
                         Console.WriteLine($"  advertise={config.Advertise}");
+                        Console.WriteLine($"  identity={SecureSessionHandshake.IdentityFingerprint}");
                         break;
                     default:
                         Console.WriteLine("Unknown command. Try: list, worlds, status, stop");
@@ -150,6 +163,10 @@ namespace SFSEnhanced.Server
                     case "--game-version": config.GameVersion = args[++i]; break;
                     case "--mod-version": config.ModVersion = args[++i]; break;
                     case "--password-protected": config.PasswordProtected = true; break;
+                    case "--registration-password": config.RegistrationPassword = args[++i]; break;
+                    case "--no-registration": config.AllowRegistration = false; break;
+                    case "--upload-max-concurrent": config.UploadMaxConcurrent = int.Parse(args[++i]); break;
+                    case "--upload-idle-seconds": config.UploadIdleSeconds = int.Parse(args[++i]); break;
                 }
             }
         }

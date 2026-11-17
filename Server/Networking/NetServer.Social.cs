@@ -30,6 +30,21 @@ namespace SFSEnhanced.Server.Networking
         private async Task HandleClaimCreate(ClientConnection conn, ClaimCreatePacket req)
         {
             if (req == null || req.WorldId != conn.CurrentWorldId) return;
+            if (!TryConsume(conn.Account.PlayerId, "claim", 6, 1.0))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "You are creating claims too quickly. Wait a moment and retry." });
+                return;
+            }
+            if (req.Shape != ClaimShape.Build && req.Shape != ClaimShape.Region)
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Unknown claim type." });
+                return;
+            }
+            if (req.Shape == ClaimShape.Region && !IsValidRegionClaim(req))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "A region claim needs a finite centre and a radius between 1 and 50000 metres." });
+                return;
+            }
             if (req.Shape == ClaimShape.Build)
             {
                 var build = _worlds.FindBuild(req.WorldId, req.BuildId);
@@ -40,7 +55,12 @@ namespace SFSEnhanced.Server.Networking
                 }
             }
             var claim = _claims.Create(req.WorldId, conn.Account.PlayerId, conn.Account.PlayerName, req);
-            if (claim != null) await BroadcastToWorld(req.WorldId, PacketType.ClaimCreate, claim, null);
+            if (claim == null)
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "That claim is outside the server's limits." });
+                return;
+            }
+            await BroadcastToWorld(req.WorldId, PacketType.ClaimCreate, claim, null);
         }
 
         private async Task HandleClaimRemove(ClientConnection conn, ClaimRemovePacket req)
@@ -52,6 +72,8 @@ namespace SFSEnhanced.Server.Networking
         private async Task HandleChat(ClientConnection conn, ChatMessagePacket msg)
         {
             if (msg == null || string.IsNullOrWhiteSpace(msg.Message)) return;
+            if (!TryConsume(conn.Account.PlayerId, "chat", 8, 2.0))
+                return;
             msg.Message = msg.Message.Trim();
             if (msg.Message.Length > 512) msg.Message = msg.Message.Substring(0, 512);
             msg.FromPlayerName = conn.Account.PlayerName;
@@ -67,6 +89,11 @@ namespace SFSEnhanced.Server.Networking
         private async Task HandleFriendInvite(ClientConnection conn, FriendInviteToWorldPacket invite)
         {
             if (invite == null) return;
+            if (!TryConsume(conn.Account.PlayerId, "invite", 5, 0.5))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "You are sending invites too quickly. Wait a moment and retry." });
+                return;
+            }
             var target = _accounts.FindByName(invite.TargetPlayerName);
             if (target == null)
             {

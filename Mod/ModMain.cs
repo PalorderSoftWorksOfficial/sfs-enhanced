@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using ModLoader;
 using ModLoader.Helpers;
 using SFSEnhanced.Mod.Networking;
@@ -28,7 +29,7 @@ namespace SFSEnhanced.Mod
         public MultiBuildManager Builds { get; private set; }
         public LocalRocketFleetSync RocketFleet { get; private set; }
         public FriendsUI Friends { get; private set; }
-        public MultiplayerMenu Menu { get; private set; }
+        internal MultiplayerMenu Menu { get; private set; }
 
         private GameObject _host;
 
@@ -56,20 +57,22 @@ namespace SFSEnhanced.Mod
             Builds.OnWorldSceneReady();
         }
 
-        public async void ConnectToServer(string host, int? port, string playerName)
+        public async Task<bool> ConnectToServer(string host, int? port, string playerName, string registrationPassword = null, bool createAccount = false)
         {
             ModSettings.Host = host;
             if (port.HasValue) ModSettings.Port = port.Value;
             ModSettings.PlayerName = playerName;
             try
             {
-                bool ok = await Client.ConnectAsync(host, port, playerName);
+                bool ok = await Client.ConnectAsync(host, port, playerName, registrationPassword, createAccount);
                 Debug.Log(ok ? $"[SFSEnhanced] Connected to {host} as {playerName}" : "[SFSEnhanced] Connection failed.");
                 if (ok) ServerHistory.Record(host, port, host);
+                return ok;
             }
             catch (Exception e)
             {
                 Debug.LogError($"[SFSEnhanced] Connection to {host} failed: {e.Message}");
+                return false;
             }
         }
     }
@@ -89,6 +92,7 @@ namespace SFSEnhanced.Mod
         {
             if (_mod == null) return;
             _mod.Client?.PumpIncoming();
+            _mod.Menu?.Tick();
             if (_playButtonRetry > 0f)
             {
                 _playButtonRetry -= Time.deltaTime;
@@ -97,7 +101,7 @@ namespace SFSEnhanced.Mod
             _mod.Builds?.TickInterpolation(Time.deltaTime);
             _mod.Builds?.TickLocalPublish(Time.deltaTime);
             _mod.RocketFleet?.Tick(Time.deltaTime);
-            if (Input.GetKeyDown(KeyCode.F8)) _mod.Menu?.Toggle();
+            if (Input.GetKeyDown(KeyCode.F8) && _mod.Menu != null && _mod.Menu.CanOpenHere()) _mod.Menu.Toggle();
         }
     }
 }

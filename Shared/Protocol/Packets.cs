@@ -25,6 +25,8 @@ namespace SFSEnhanced.Shared.Protocol
         public byte[] ServerChallenge;
         public byte[] ClientNonce;
         public byte[] ExchangeIdentifier;
+        public bool RegistrationAllowed;
+        public bool RegistrationPasswordRequired;
     }
 
     public class AuthChallengePacket
@@ -44,6 +46,36 @@ namespace SFSEnhanced.Shared.Protocol
         public byte[] EphemeralY;
         public byte[] Proof;
         public byte[] RegistrationSecret;
+    }
+
+    public class RegistrationPromptPacket
+    {
+        public bool Required;
+        public int Version = 3;
+        public byte[] Salt;
+    }
+
+    public class RegistrationAuthPacket
+    {
+        public byte[] Proof;
+    }
+
+    public static class AuthErrorCode
+    {
+        public const string UnknownAccount = "unknown_account";
+        public const string BadToken = "bad_token";
+        public const string NameTaken = "name_taken";
+        public const string NameInvalid = "name_invalid";
+        public const string RegistrationDisabled = "registration_disabled";
+        public const string RegistrationPasswordRequired = "registration_password_required";
+        public const string BadRegistrationPassword = "bad_registration_password";
+        public const string ProtocolVersion = "protocol_version";
+        public const string HandshakeInvalid = "handshake_invalid";
+        public const string RegistrationProofRequired = "registration_proof_required";
+        public const string RegistrationTimeout = "registration_timeout";
+        public const string IdentityUntrusted = "identity_untrusted";
+        public const string IdentityStoreUnreadable = "identity_store_unreadable";
+        public const string PinStoreWriteFailed = "pin_store_write_failed";
     }
 
     public class AuthResultPacket
@@ -367,6 +399,53 @@ namespace SFSEnhanced.Shared.Protocol
         public DateTime SentUtc = DateTime.UtcNow;
     }
 
+    public class ProfileRequestPacket
+    {
+        public string PlayerId;
+    }
+
+    public class PlayerProfile
+    {
+        public string PlayerId;
+        public string PlayerName;
+        public string DisplayName;
+        public string Bio;
+        public string AvatarAccent;
+        public DateTime MemberSinceUtc;
+        public DateTime LastSeenUtc;
+        public bool Online;
+        public string CurrentWorldId;
+        public bool IsSelf;
+        public bool ShowPresence;
+        public bool AllowFriendRequests;
+        public int WorldsOwned;
+        public int FriendsCount;
+        public long SessionsCount;
+    }
+
+    public class ProfileResponsePacket
+    {
+        public bool Found;
+        public string Reason;
+        public PlayerProfile Profile;
+    }
+
+    public class ProfileUpdatePacket
+    {
+        public string DisplayName;
+        public string Bio;
+        public string AvatarAccent;
+        public bool? AllowFriendRequests;
+        public bool? ShowPresence;
+    }
+
+    public class ProfileUpdateResultPacket
+    {
+        public bool Accepted;
+        public string Reason;
+        public PlayerProfile Profile;
+    }
+
     // ---- Errors ----
 
     public class ErrorPacket
@@ -377,5 +456,6 @@ namespace SFSEnhanced.Shared.Protocol
     public class AuthErrorPacket
     {
         public string Message;
+        public string Code;
     }
 }

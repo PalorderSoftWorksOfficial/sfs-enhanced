@@ -34,9 +34,19 @@ namespace SFSEnhanced.Server.Networking
 
         public bool IsSecure => _channel != null;
 
-        public void EstablishSecureChannel(SecureChannel channel, PlayerAccount account)
+        public void EstablishSecureChannel(SecureChannel channel)
         {
             _channel = channel ?? throw new ArgumentNullException(nameof(channel));
+        }
+
+        public void EstablishSecureChannel(SecureChannel channel, PlayerAccount account)
+        {
+            EstablishSecureChannel(channel);
+            AttachAccount(account);
+        }
+
+        public void AttachAccount(PlayerAccount account)
+        {
             Account = account ?? throw new ArgumentNullException(nameof(account));
         }
 

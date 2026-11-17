@@ -38,5 +38,18 @@ namespace SFSEnhanced.Shared.Models
         public List<string> FriendPlayerIds = new List<string>();
         public List<string> IncomingFriendRequests = new List<string>();
         public List<string> OutgoingFriendRequests = new List<string>();
+
+        public string DisplayName;
+        public string Bio;
+        public string AvatarAccent;
+        public ProfilePrivacy Privacy = new ProfilePrivacy();
+        public long SessionsCount;
+        public DateTime ProfileUpdatedUtc = DateTime.UtcNow;
+    }
+
+    public class ProfilePrivacy
+    {
+        public bool AllowFriendRequests = true;
+        public bool ShowPresence = true;
     }
 }

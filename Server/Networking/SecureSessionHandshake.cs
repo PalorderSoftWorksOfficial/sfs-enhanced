@@ -11,15 +11,33 @@ namespace SFSEnhanced.Server.Networking
     public sealed class SecureSessionHandshake
     {
         private const string StaticKeyFile = "server_static_key";
+        private const string RegistrationSaltFile = "registration_salt";
         private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(12);
 
         private static byte[] _staticPrivate;
         private static byte[] _staticX;
         private static byte[] _staticY;
         private static string _identityFingerprint;
+        private static byte[] _registrationSalt;
+        private static byte[] _registrationPasswordHash;
+        private static string _registrationPasswordSource;
         private static readonly object StaticLock = new object();
 
         public static string IdentityFingerprint => _identityFingerprint;
+
+        public static byte[] RegistrationPasswordHash(string password)
+        {
+            lock (StaticLock)
+            {
+                if (_registrationPasswordHash != null && string.Equals(_registrationPasswordSource, password, StringComparison.Ordinal))
+                    return _registrationPasswordHash;
+                if (_registrationSalt == null)
+                    throw new InvalidOperationException("The registration salt is not initialized.");
+                _registrationPasswordHash = SessionAuth.ComputePasswordHashV2(password, _registrationSalt);
+                _registrationPasswordSource = password;
+                return _registrationPasswordHash;
+            }
+        }
 
         public static void InitializeStaticKey(FileStore store)
         {
@@ -42,35 +60,102 @@ namespace SFSEnhanced.Server.Networking
             }
         }
 
-        /// <summary>Runs the handshake on a fresh connection. Returns the authenticated account, or null after a rejection was sent.</summary>
+        public static void InitializeRegistrationSalt(FileStore store)
+        {
+            lock (StaticLock)
+            {
+                if (_registrationSalt != null) return;
+                RegistrationSaltRecord record = null;
+                try
+                {
+                    record = store.Load<RegistrationSaltRecord>("system", RegistrationSaltFile);
+                }
+                catch
+                {
+                    record = null;
+                }
+
+                if (record != null && !string.IsNullOrEmpty(record.SaltBase64))
+                {
+                    byte[] decoded = null;
+                    try { decoded = Convert.FromBase64String(record.SaltBase64); }
+                    catch { decoded = null; }
+                    if (decoded != null && decoded.Length == SessionAuth.RegistrationSaltBytes)
+                    {
+                        _registrationSalt = decoded;
+                        return;
+                    }
+                }
+
+                _registrationSalt = SessionAuth.RandomBytes(SessionAuth.RegistrationSaltBytes);
+                store.EnsureFolder("system");
+                store.Save("system", RegistrationSaltFile, new RegistrationSaltRecord { SaltBase64 = Convert.ToBase64String(_registrationSalt) });
+            }
+        }
+
         public async Task<PlayerAccount> AuthenticateAsync(ClientConnection conn, AccountService accounts, ServerConfig config, CancellationToken ct)
+        {
+            try
+            {
+                return await AuthenticateCoreAsync(conn, accounts, config, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[handshake-error] {e.GetType().Name}: {e.Message}");
+                await SendFailureAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "The handshake failed on the server. Try again.").ConfigureAwait(false);
+                return null;
+            }
+        }
+
+        private async Task SendFailureAsync(ClientConnection conn, CancellationToken ct, string code, string message)
+        {
+            try
+            {
+                if (conn.IsSecure)
+                    await conn.SendSealedAsync(PacketType.AuthError, new AuthErrorPacket { Code = code, Message = message }, ct).ConfigureAwait(false);
+                else
+                    await conn.SendPlainAsync(PacketType.AuthError, new AuthErrorPacket { Code = code, Message = message }, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
+        private async Task<PlayerAccount> AuthenticateCoreAsync(ClientConnection conn, AccountService accounts, ServerConfig config, CancellationToken ct)
         {
             HelloPacket hello = await ReceivePlainAsync(conn, ct).ConfigureAwait(false);
             if (hello == null || !string.Equals(hello.ProtocolVersion, HelloPacket.ProtocolVersion2, StringComparison.Ordinal))
             {
-                await RejectAsync(conn, ct, "Unsupported protocol version.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.ProtocolVersion, "Unsupported protocol version.").ConfigureAwait(false);
                 return null;
             }
-            if (string.IsNullOrWhiteSpace(hello.PlayerName) || hello.PlayerName.Trim().Length > 32)
+
+            if (!PlayerNameRules.TryCanonicalize(hello.PlayerName, out string playerName, out string nameError))
             {
-                await RejectAsync(conn, ct, "A player name of 1-32 characters is required.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.NameInvalid, nameError).ConfigureAwait(false);
                 return null;
             }
             if (hello.ClientNonce == null || hello.ClientNonce.Length != SessionAuth.NonceBytes)
             {
-                await RejectAsync(conn, ct, "Client handshake nonce was invalid.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Client handshake nonce was invalid.").ConfigureAwait(false);
                 return null;
             }
+
             bool registerMode = string.Equals(hello.Mode, HelloPacket.ModeRegister, StringComparison.Ordinal);
             if (!registerMode && !string.Equals(hello.Mode, HelloPacket.ModeToken, StringComparison.Ordinal))
             {
-                await RejectAsync(conn, ct, "Unknown handshake mode.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Unknown handshake mode.").ConfigureAwait(false);
                 return null;
             }
 
-            PlayerAccount existing = accounts.FindByName(hello.PlayerName);
+            bool passwordRequired = !string.IsNullOrEmpty(config.RegistrationPassword);
+            bool registrationAllowed = config.AllowRegistration;
+            PlayerAccount existing = accounts.FindByName(playerName);
 
-            string playerName = hello.PlayerName.Trim();
             byte[] serverChallenge = SessionAuth.RandomBytes(SessionAuth.ChallengeBytes);
             byte[] exchangeIdentifier = SessionAuth.RandomBytes(SessionAuth.SessionIdBytes);
             DateTime issuedUtc = DateTime.UtcNow;
@@ -80,19 +165,21 @@ namespace SFSEnhanced.Server.Networking
                 Accepted = true,
                 ServerChallenge = serverChallenge,
                 ClientNonce = hello.ClientNonce,
-                ExchangeIdentifier = exchangeIdentifier
+                ExchangeIdentifier = exchangeIdentifier,
+                RegistrationAllowed = registrationAllowed,
+                RegistrationPasswordRequired = passwordRequired
             }, ct).ConfigureAwait(false);
 
             AuthResponsePacket ephemeral = await ReceivePlainAsync<AuthResponsePacket>(conn, ct).ConfigureAwait(false);
             if (ephemeral == null || ephemeral.EphemeralX == null || ephemeral.EphemeralX.Length != SessionAuth.CoordinateBytes ||
                 ephemeral.EphemeralY == null || ephemeral.EphemeralY.Length != SessionAuth.CoordinateBytes)
             {
-                await RejectAsync(conn, ct, "Client ephemeral key was invalid.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Client ephemeral key was invalid.").ConfigureAwait(false);
                 return null;
             }
             if (!P256.IsOnCurve(ephemeral.EphemeralX, ephemeral.EphemeralY))
             {
-                await RejectAsync(conn, ct, "Client ephemeral key was not on the agreed curve.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Client ephemeral key was not on the agreed curve.").ConfigureAwait(false);
                 return null;
             }
             byte[] clientX = ephemeral.EphemeralX;
@@ -115,20 +202,25 @@ namespace SFSEnhanced.Server.Networking
             AuthResponsePacket proof = await ReceivePlainAsync<AuthResponsePacket>(conn, ct).ConfigureAwait(false);
             if (proof == null || proof.Proof == null || proof.Proof.Length != 32)
             {
-                await RejectAsync(conn, ct, "Authentication proof was invalid.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Authentication proof was invalid.").ConfigureAwait(false);
                 return null;
             }
             if (DateTime.UtcNow - issuedUtc > HandshakeTimeout)
             {
-                await RejectAsync(conn, ct, "The handshake timed out.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "The handshake timed out.").ConfigureAwait(false);
                 return null;
             }
 
             byte[] ephemeralSecret = P256.DeriveSharedSecret(ephemeralPrivate, clientX, clientY);
-            byte[] staticSecret = P256.DeriveSharedSecret(_staticPrivate, clientX, clientY) ?? new byte[32];
             if (ephemeralSecret == null)
             {
-                await RejectAsync(conn, ct, "Client ephemeral key was not on the agreed curve.").ConfigureAwait(false);
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Client ephemeral key was not on the agreed curve.").ConfigureAwait(false);
+                return null;
+            }
+            byte[] staticSecret = P256.DeriveSharedSecret(_staticPrivate, clientX, clientY);
+            if (staticSecret == null)
+            {
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "The client key could not be combined with the server identity key.").ConfigureAwait(false);
                 return null;
             }
 
@@ -136,43 +228,74 @@ namespace SFSEnhanced.Server.Networking
             byte[] preMaster = SessionAuth.ComputePreMaster(ephemeralSecret, staticSecret, transcriptHash, exchangeIdentifier, hello.ClientNonce);
             byte[] sessionId = SessionAuth.DeriveSessionId(preMaster);
 
-            PlayerAccount account;
-            string issuedToken = null;
-            if (!string.IsNullOrEmpty(config.RegistrationPassword))
+            var channel = SecureChannel.FromPreMaster(preMaster, sessionId, isServer: true);
+
+            if (proof.RegistrationSecret != null && proof.RegistrationSecret.Length > 0)
             {
-                if (proof.RegistrationSecret == null || proof.RegistrationSecret.Length != 32)
+                await RejectAsync(conn, ct, AuthErrorCode.RegistrationPasswordRequired,
+                    "This server no longer accepts a registration password in the clear. Update SFS Enhanced and enter the password again.").ConfigureAwait(false);
+                return null;
+            }
+
+            if (passwordRequired && registerMode)
+            {
+                conn.EstablishSecureChannel(channel);
+                await conn.SendSealedAsync(PacketType.RegistrationPrompt, new RegistrationPromptPacket
                 {
-                    await RejectAsync(conn, ct, "This server requires a registration password.").ConfigureAwait(false);
+                    Required = true,
+                    Version = 3,
+                    Salt = _registrationSalt
+                }, ct).ConfigureAwait(false);
+
+                Task<(bool ok, PacketType type, string json)> promptTask = conn.ReceiveSecureAsync(ct);
+                Task finished = await Task.WhenAny(promptTask, Task.Delay(TimeSpan.FromSeconds(10), ct)).ConfigureAwait(false);
+                if (finished != promptTask)
+                {
+                    await SendFailureAsync(conn, ct, AuthErrorCode.RegistrationTimeout,
+                        "The registration password challenge timed out. Try again.").ConfigureAwait(false);
                     return null;
                 }
-                byte[] required = SessionAuth.ComputeRegistrationProof(SessionAuth.ComputePasswordHash(config.RegistrationPassword), transcriptHash);
-                if (!SessionAuth.FixedTimeEquals(required, proof.RegistrationSecret))
+                (bool promptOk, PacketType promptType, string promptJson) = await promptTask.ConfigureAwait(false);
+                if (!promptOk)
                 {
-                    await RejectAsync(conn, ct, "The registration password was incorrect.").ConfigureAwait(false);
+                    return null;
+                }
+                if (promptType != PacketType.RegistrationAuth)
+                {
+                    await conn.SendSealedAsync(PacketType.AuthError, new AuthErrorPacket
+                    {
+                        Code = AuthErrorCode.HandshakeInvalid,
+                        Message = "The registration password proof arrived in the wrong order."
+                    }, ct).ConfigureAwait(false);
+                    return null;
+                }
+
+                RegistrationAuthPacket registration = Deserialize<RegistrationAuthPacket>(promptJson);
+                byte[] requiredProof = SessionAuth.ComputeRegistrationProofV2(RegistrationPasswordHash(config.RegistrationPassword), transcriptHash);
+                if (registration == null || registration.Proof == null || !SessionAuth.FixedTimeEquals(requiredProof, registration.Proof))
+                {
+                    await conn.SendSealedAsync(PacketType.AuthError, new AuthErrorPacket
+                    {
+                        Code = AuthErrorCode.BadRegistrationPassword,
+                        Message = "The registration password was incorrect."
+                    }, ct).ConfigureAwait(false);
                     return null;
                 }
             }
+
+            PlayerAccount account;
+            string issuedToken = null;
+
             if (registerMode)
             {
                 if (existing != null)
                 {
-                    await RejectAsync(conn, ct, "That name is already taken.").ConfigureAwait(false);
+                    await RejectAsync(conn, ct, AuthErrorCode.NameTaken, "That name is already registered on this server. Sign in with your existing account instead.").ConfigureAwait(false);
                     return null;
                 }
-                if (!config.AllowRegistration)
+                if (!registrationAllowed)
                 {
-                    await RejectAsync(conn, ct, "This server does not accept new registrations.").ConfigureAwait(false);
-                    return null;
-                }
-                var created = accounts.CreateAccount(playerName);
-                account = created.account;
-                issuedToken = created.plainToken;
-            }
-            else if (existing == null)
-            {
-                if (!config.AllowRegistration)
-                {
-                    await RejectAsync(conn, ct, "No account exists for this name and this server does not accept new registrations.").ConfigureAwait(false);
+                    await RejectAsync(conn, ct, AuthErrorCode.RegistrationDisabled, "This server is not accepting new registrations.").ConfigureAwait(false);
                     return null;
                 }
                 var created = accounts.CreateAccount(playerName);
@@ -181,15 +304,21 @@ namespace SFSEnhanced.Server.Networking
             }
             else
             {
+                if (existing == null)
+                {
+                    await RejectAsync(conn, ct, AuthErrorCode.UnknownAccount, registrationAllowed
+                        ? "No account exists for that name on this server. Create an account to continue."
+                        : "No account exists for that name on this server, and this server is not accepting new registrations.").ConfigureAwait(false);
+                    return null;
+                }
                 account = existing;
                 if (!accounts.ValidateProof(account, proof.Proof, transcriptHash))
                 {
-                    await RejectAsync(conn, ct, "The auth token was not accepted for this name.").ConfigureAwait(false);
+                    await RejectAsync(conn, ct, AuthErrorCode.BadToken, "The saved auth token for that account was not accepted. Sign in again or use a different name.").ConfigureAwait(false);
                     return null;
                 }
             }
 
-            var channel = SecureChannel.FromPreMaster(preMaster, sessionId, isServer: true);
             conn.EstablishSecureChannel(channel, account);
             await conn.SendSealedAsync(PacketType.AuthResult, new AuthResultPacket
             {
@@ -201,9 +330,9 @@ namespace SFSEnhanced.Server.Networking
             return account;
         }
 
-        private static async Task RejectAsync(ClientConnection conn, CancellationToken ct, string reason)
+        private static async Task RejectAsync(ClientConnection conn, CancellationToken ct, string code, string reason)
         {
-            try { await conn.SendPlainAsync(PacketType.AuthError, new AuthErrorPacket { Message = reason }, ct).ConfigureAwait(false); }
+            try { await conn.SendPlainAsync(PacketType.AuthError, new AuthErrorPacket { Message = reason, Code = code }, ct).ConfigureAwait(false); }
             catch { }
         }
 
@@ -231,5 +360,10 @@ namespace SFSEnhanced.Server.Networking
     public sealed class StaticKeyRecord
     {
         public string PrivateKeyBase64;
+    }
+
+    public sealed class RegistrationSaltRecord
+    {
+        public string SaltBase64;
     }
 }

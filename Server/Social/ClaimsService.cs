@@ -18,10 +18,40 @@ namespace SFSEnhanced.Server.Social
 
         public ClaimsService(WorldManager worlds) => _worlds = worlds;
 
+        public const int MaxClaimsPerWorld = 512;
+        public const int MaxRegionClaimsPerPlayer = 32;
+        public const double MinRegionRadiusMeters = 1.0;
+        public const double MaxRegionRadiusMeters = 50000.0;
+        public const double MaxRegionCenterMeters = 1000000.0;
+
         public ClaimInfo Create(string worldId, string ownerPlayerId, string ownerPlayerName, ClaimCreatePacket req)
         {
             var world = _worlds.Get(worldId);
             if (world == null || req == null) return null;
+            if (world.Claims.Count >= MaxClaimsPerWorld) return null;
+
+            if (req.Shape == ClaimShape.Region)
+            {
+                bool finite = !double.IsNaN(req.CenterX) && !double.IsInfinity(req.CenterX) &&
+                              !double.IsNaN(req.CenterY) && !double.IsInfinity(req.CenterY) &&
+                              !double.IsNaN(req.RadiusMeters) && !double.IsInfinity(req.RadiusMeters);
+                if (!finite) return null;
+                if (Math.Abs(req.CenterX) > MaxRegionCenterMeters || Math.Abs(req.CenterY) > MaxRegionCenterMeters) return null;
+                if (req.RadiusMeters < MinRegionRadiusMeters || req.RadiusMeters > MaxRegionRadiusMeters) return null;
+                int owned = world.Claims.Count(c => c.Shape == ClaimShape.Region && c.OwnerPlayerId == ownerPlayerId);
+                if (owned >= MaxRegionClaimsPerPlayer) return null;
+            }
+            else if (req.Shape == ClaimShape.Build)
+            {
+                if (string.IsNullOrEmpty(req.BuildId)) return null;
+                var build = world.Builds.FirstOrDefault(b => b.BuildId == req.BuildId);
+                if (build == null || build.OwnerPlayerId != ownerPlayerId) return null;
+            }
+            else
+            {
+                return null;
+            }
+
             if (req.Shape == ClaimShape.Build)
             {
                 var existing = world.Claims.FirstOrDefault(c => c.Shape == ClaimShape.Build && c.BuildId == req.BuildId);
@@ -69,19 +99,20 @@ namespace SFSEnhanced.Server.Social
         public bool CanInteract(string worldId, string buildId, string playerId)
         {
             var world = _worlds.Get(worldId);
-            if (world == null) return true;
+            if (world == null) return false;
 
             var build = world.Builds.FirstOrDefault(b => b.BuildId == buildId);
 
             foreach (var claim in world.Claims)
             {
+                if (claim == null) continue;
                 bool covers = (claim.Shape == ClaimShape.Build && claim.BuildId == buildId)
                     || (claim.Shape == ClaimShape.Region && build != null && WithinRadius(claim, build));
 
                 if (!covers) continue;
                 if (claim.OwnerPlayerId == playerId) return true;
-                if (claim.TrustedPlayerIds.Contains(playerId)) return true;
-                return false; // covered by a claim, and the requester isn't owner/trusted
+                if (claim.TrustedPlayerIds != null && claim.TrustedPlayerIds.Contains(playerId)) return true;
+                return false;
             }
             return true; // unclaimed
         }

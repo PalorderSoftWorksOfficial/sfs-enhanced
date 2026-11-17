@@ -1,36 +1,25 @@
 using System;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
+using SFSEnhanced.Shared.Networking;
 
 namespace SFSEnhanced.Mod.Networking
 {
-    internal sealed class ServerEndpoint
-    {
-        public string Host { get; set; }
-        public int Port { get; set; }
-    }
-
     internal static class ServerEndpointResolver
     {
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
-        public static async Task<ServerEndpoint> ResolveAsync(string input, int? portOverride)
+        public static async Task<CanonicalEndpoint> ResolveAsync(string input, int? portOverride)
         {
-            if (string.IsNullOrWhiteSpace(input)) throw new ArgumentException("Server address is required.");
-            string host = input.Trim();
-            if (Uri.TryCreate("sfs://" + host, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
-                host = uri.Host;
+            if (!EndpointKey.TryParseAuthority(input, portOverride, out CanonicalEndpoint endpoint, out string error))
+                throw new ArgumentException(error);
 
-            if (portOverride.HasValue)
-            {
-                if (portOverride.Value < 1 || portOverride.Value > 65535) throw new ArgumentOutOfRangeException(nameof(portOverride));
-                return new ServerEndpoint { Host = host, Port = portOverride.Value };
-            }
+            if (endpoint.PortExplicit) return endpoint;
+            if (endpoint.Host.StartsWith("[", StringComparison.Ordinal)) return WithDefaultPort(endpoint);
 
-            string service = "_sfs._tcp." + host.TrimEnd('.');
+            string service = "_sfs._tcp." + endpoint.Host;
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, "https://cloudflare-dns.com/dns-query?name=" + Uri.EscapeDataString(service) + "&type=SRV");
@@ -42,15 +31,32 @@ namespace SFSEnhanced.Mod.Networking
                 if (answer != null)
                 {
                     var parts = (answer.Value<string>("data") ?? string.Empty).Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length == 4 && int.TryParse(parts[2], out var srvPort) && srvPort > 0 && srvPort <= 65535)
-                        return new ServerEndpoint { Host = parts[3].TrimEnd('.'), Port = srvPort };
+                    if (parts.Length == 4 &&
+                        int.TryParse(parts[2], out int srvPort) && srvPort >= 1 && srvPort <= 65535 &&
+                        !string.IsNullOrWhiteSpace(parts[3]) && parts[3] != "." &&
+                        EndpointKey.TryParseAuthority(parts[3], srvPort, out CanonicalEndpoint target, out _))
+                    {
+                        endpoint.Port = srvPort;
+                        endpoint.ResolvedHost = target.Host;
+                        endpoint.ResolvedPort = srvPort;
+                        endpoint.TransportHost = target.TransportHost;
+                        return endpoint;
+                    }
                 }
             }
             catch
             {
             }
 
-            return new ServerEndpoint { Host = host, Port = 7777 };
+            return WithDefaultPort(endpoint);
+        }
+
+        private static CanonicalEndpoint WithDefaultPort(CanonicalEndpoint endpoint)
+        {
+            endpoint.Port = 7777;
+            endpoint.ResolvedHost = endpoint.Host;
+            endpoint.ResolvedPort = 7777;
+            return endpoint;
         }
     }
 }

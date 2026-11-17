@@ -17,6 +17,12 @@ namespace SFSEnhanced.Shared.Protocol
         private const string SessionIdLabel = "SFSEnhanced-SessionId-v2";
         private const string IdentityLabel = "SFSEnhanced-ServerIdentity-v1";
         private const string RegistrationLabel = "SFSEnhanced-Registration-v2";
+        private const string RegistrationLabelV2 = "SFSEnhanced-Registration-v3";
+        private const string RegistrationSaltLabel = "SFSEnhanced-RegistrationSalt-v2";
+        private const int PasswordHashRounds = 600000;
+        private const int PasswordHashRoundsV2 = 100000;
+
+        public const int RegistrationSaltBytes = 32;
 
         public static byte[] RandomBytes(int count)
         {
@@ -33,7 +39,21 @@ namespace SFSEnhanced.Shared.Protocol
             byte[] salt = Encoding.UTF8.GetBytes("SFSEnhanced-Registration-Salt-v1");
             byte[] data = Encoding.UTF8.GetBytes(registrationPassword ?? string.Empty);
             byte[] current = Concat(salt, data);
-            for (int round = 0; round < 600000; round++)
+            for (int round = 0; round < PasswordHashRounds; round++)
+            {
+                current = Sha256(Concat(current, data));
+            }
+            return current;
+        }
+
+        public static byte[] ComputePasswordHashV2(string registrationPassword, byte[] serverSalt)
+        {
+            if (serverSalt == null || serverSalt.Length == 0)
+                throw new ArgumentException("A per-instance registration salt is required.", nameof(serverSalt));
+            byte[] data = Encoding.UTF8.GetBytes(registrationPassword ?? string.Empty);
+            byte[] instanceSalt = Sha256(Concat(Encoding.UTF8.GetBytes(RegistrationSaltLabel), serverSalt));
+            byte[] current = Concat(instanceSalt, data);
+            for (int round = 0; round < PasswordHashRoundsV2; round++)
             {
                 current = Sha256(Concat(current, data));
             }
@@ -44,6 +64,12 @@ namespace SFSEnhanced.Shared.Protocol
         {
             using var hmac = new HMACSHA256(passwordHash);
             return hmac.ComputeHash(Concat(Encoding.UTF8.GetBytes(RegistrationLabel), transcriptHash));
+        }
+
+        public static byte[] ComputeRegistrationProofV2(byte[] passwordHash, byte[] transcriptHash)
+        {
+            using var hmac = new HMACSHA256(passwordHash);
+            return hmac.ComputeHash(Concat(Encoding.UTF8.GetBytes(RegistrationLabelV2), transcriptHash));
         }
 
         public static byte[] ComputeTranscriptHash(byte[] clientNonce, byte[] serverChallenge, byte[] clientEphemeralX, byte[] clientEphemeralY, byte[] serverEphemeralX, byte[] serverEphemeralY, byte[] serverStaticX, byte[] serverStaticY, string playerName)
@@ -81,12 +107,14 @@ namespace SFSEnhanced.Shared.Protocol
             return sessionId;
         }
 
+        public static byte[] ComputeIdentityDigest(byte[] staticX, byte[] staticY)
+        {
+            return Sha256(Concat(Encoding.UTF8.GetBytes(IdentityLabel), staticX, staticY));
+        }
+
         public static byte[] ComputeIdentityFingerprint(byte[] staticX, byte[] staticY)
         {
-            var hex = new StringBuilder(64);
-            foreach (byte b in Sha256(Concat(Encoding.UTF8.GetBytes(IdentityLabel), staticX, staticY)))
-                hex.Append(b.ToString("x2"));
-            return Encoding.UTF8.GetBytes(hex.ToString());
+            return Encoding.UTF8.GetBytes(ServerIdentityFormat.Hex(ComputeIdentityDigest(staticX, staticY)));
         }
 
         public static bool FixedTimeEquals(byte[] a, byte[] b)

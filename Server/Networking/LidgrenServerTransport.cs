@@ -47,6 +47,7 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task PumpAsync(CancellationToken ct)
         {
+            int idleSpins = 0;
             try
             {
                 while (!ct.IsCancellationRequested)
@@ -54,9 +55,11 @@ namespace SFSEnhanced.Server.Networking
                     var message = _peer.ReadMessage();
                     if (message == null)
                     {
-                        await Task.Delay(1, ct).ConfigureAwait(false);
+                        idleSpins = Math.Min(idleSpins + 1, 64);
+                        await Task.Delay(idleSpins > 4 ? 10 : 2, ct).ConfigureAwait(false);
                         continue;
                     }
+                    idleSpins = 0;
                     try
                     {
                         switch (message.MessageType)

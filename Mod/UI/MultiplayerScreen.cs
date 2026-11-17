@@ -18,13 +18,22 @@ namespace SFSEnhanced.Mod.UI
         {
             menuHolder.SetActive(true);
             _controller?.BuildWindow(transform);
+            if (SFS.Input.ScreenManager.main != null)
+                Debug.Log($"[SFSEnhanced] multiplayer screen opened (stack {SFS.Input.ScreenManager.main.GetStackCount()}).");
+        }
+
+        public override void Close()
+        {
+            if (_controller != null && _controller.Back()) return;
+            base.Close();
         }
 
         public override void OnClose()
         {
             _controller?.DestroyWindow();
             if (menuHolder != null) menuHolder.SetActive(false);
-            _controller?.OnScreenClosed();
+            if (SFS.Input.ScreenManager.main != null && SFS.Input.ScreenManager.main.GetStackCount() <= 1)
+                _controller?.OnScreenClosed();
         }
     }
 }
