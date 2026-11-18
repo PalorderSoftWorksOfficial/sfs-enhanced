@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using SFSEnhanced.Shared.Models;
 
 namespace SFSEnhanced.Shared.Protocol
 {
@@ -7,11 +8,11 @@ namespace SFSEnhanced.Shared.Protocol
 
     public class HelloPacket
     {
-        public const string ProtocolVersion2 = "2.0";
+        public const string ProtocolVersion3 = "3.0";
         public const string ModeToken = "token";
         public const string ModeRegister = "register";
 
-        public string ProtocolVersion = ProtocolVersion2;
+        public string ProtocolVersion = ProtocolVersion3;
         public string PlayerName;
         public string ClientModVersion;
         public byte[] ClientNonce;
@@ -48,6 +49,14 @@ namespace SFSEnhanced.Shared.Protocol
         public byte[] RegistrationSecret;
     }
 
+    public class IdentityProofPacket
+    {
+        public const int CurrentVersion = 1;
+
+        public int Version = CurrentVersion;
+        public byte[] Mac;
+    }
+
     public class RegistrationPromptPacket
     {
         public bool Required;
@@ -75,6 +84,8 @@ namespace SFSEnhanced.Shared.Protocol
         public const string RegistrationTimeout = "registration_timeout";
         public const string IdentityUntrusted = "identity_untrusted";
         public const string IdentityStoreUnreadable = "identity_store_unreadable";
+        public const string IdentityProofMissing = "identity_proof_missing";
+        public const string IdentityProofInvalid = "identity_proof_invalid";
         public const string PinStoreWriteFailed = "pin_store_write_failed";
     }
 
@@ -446,11 +457,52 @@ namespace SFSEnhanced.Shared.Protocol
         public PlayerProfile Profile;
     }
 
+    // ---- Rooms ----
+
+    public class RoomCreatePacket
+    {
+        public string Name;
+        public string Description;
+        public RoomVisibility Visibility;
+        public int Capacity;
+        public string WorldId;
+    }
+
+    public class RoomJoinPacket
+    {
+        public string RoomId;
+    }
+
+    public class RoomClosePacket
+    {
+        public string RoomId;
+    }
+
+    public class RoomStatePacket
+    {
+        public bool Accepted;
+        public string Reason;
+        public RoomSummary Room;
+        public WorldJoinAckPacket World;
+    }
+
+    public class RoomListResponsePacket
+    {
+        public List<RoomSummary> Rooms = new List<RoomSummary>();
+    }
+
+    public class RoomClosedPacket
+    {
+        public string RoomId;
+        public string Reason;
+    }
+
     // ---- Errors ----
 
     public class ErrorPacket
     {
         public string Message;
+        public string Code;
     }
 
     public class AuthErrorPacket

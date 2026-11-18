@@ -44,10 +44,29 @@ namespace SFSEnhanced.Server.Networking
             lock (StaticLock)
             {
                 if (_staticPrivate != null) return;
-                StaticKeyRecord record = store.Load<StaticKeyRecord>("system", StaticKeyFile);
-                if (record != null && !string.IsNullOrEmpty(record.PrivateKeyBase64))
+                if (store.Exists("system", StaticKeyFile))
                 {
-                    _staticPrivate = Convert.FromBase64String(record.PrivateKeyBase64);
+                    StaticKeyRecord record;
+                    try
+                    {
+                        record = store.Load<StaticKeyRecord>("system", StaticKeyFile);
+                    }
+                    catch (Exception e)
+                    {
+                        throw new InvalidOperationException("The server identity key file could not be read. Restore data/system/server_static_key.json from backup; the server will not silently generate a new identity. (" + e.Message + ")", e);
+                    }
+
+                    byte[] loaded = null;
+                    if (record != null && !string.IsNullOrEmpty(record.PrivateKeyBase64))
+                    {
+                        try { loaded = Convert.FromBase64String(record.PrivateKeyBase64); }
+                        catch (FormatException) { loaded = null; }
+                    }
+                    if (loaded == null || !P256.IsValidPrivateKey(loaded))
+                    {
+                        throw new InvalidOperationException("The server identity key file is present but does not contain a usable key. Restore data/system/server_static_key.json from backup, or delete it deliberately to create a new identity; every client that trusted the old key will then report a changed identity.");
+                    }
+                    _staticPrivate = loaded;
                 }
                 else
                 {
@@ -128,7 +147,7 @@ namespace SFSEnhanced.Server.Networking
         private async Task<PlayerAccount> AuthenticateCoreAsync(ClientConnection conn, AccountService accounts, ServerConfig config, CancellationToken ct)
         {
             HelloPacket hello = await ReceivePlainAsync(conn, ct).ConfigureAwait(false);
-            if (hello == null || !string.Equals(hello.ProtocolVersion, HelloPacket.ProtocolVersion2, StringComparison.Ordinal))
+            if (hello == null || !string.Equals(hello.ProtocolVersion, HelloPacket.ProtocolVersion3, StringComparison.Ordinal))
             {
                 await RejectAsync(conn, ct, AuthErrorCode.ProtocolVersion, "Unsupported protocol version.").ConfigureAwait(false);
                 return null;
@@ -199,18 +218,6 @@ namespace SFSEnhanced.Server.Networking
                 FinalFlag = true
             }, ct).ConfigureAwait(false);
 
-            AuthResponsePacket proof = await ReceivePlainAsync<AuthResponsePacket>(conn, ct).ConfigureAwait(false);
-            if (proof == null || proof.Proof == null || proof.Proof.Length != 32)
-            {
-                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Authentication proof was invalid.").ConfigureAwait(false);
-                return null;
-            }
-            if (DateTime.UtcNow - issuedUtc > HandshakeTimeout)
-            {
-                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "The handshake timed out.").ConfigureAwait(false);
-                return null;
-            }
-
             byte[] ephemeralSecret = P256.DeriveSharedSecret(ephemeralPrivate, clientX, clientY);
             if (ephemeralSecret == null)
             {
@@ -229,6 +236,24 @@ namespace SFSEnhanced.Server.Networking
             byte[] sessionId = SessionAuth.DeriveSessionId(preMaster);
 
             var channel = SecureChannel.FromPreMaster(preMaster, sessionId, isServer: true);
+            conn.EstablishSecureChannel(channel);
+            await conn.SendSealedAsync(PacketType.IdentityProof, new IdentityProofPacket
+            {
+                Version = IdentityProofPacket.CurrentVersion,
+                Mac = SessionAuth.ComputeIdentityProof(staticSecret, transcriptHash)
+            }, ct).ConfigureAwait(false);
+
+            AuthResponsePacket proof = await ReceivePlainAsync<AuthResponsePacket>(conn, ct).ConfigureAwait(false);
+            if (proof == null || proof.Proof == null || proof.Proof.Length != 32)
+            {
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "Authentication proof was invalid.").ConfigureAwait(false);
+                return null;
+            }
+            if (DateTime.UtcNow - issuedUtc > HandshakeTimeout)
+            {
+                await RejectAsync(conn, ct, AuthErrorCode.HandshakeInvalid, "The handshake timed out.").ConfigureAwait(false);
+                return null;
+            }
 
             if (proof.RegistrationSecret != null && proof.RegistrationSecret.Length > 0)
             {
@@ -239,7 +264,6 @@ namespace SFSEnhanced.Server.Networking
 
             if (passwordRequired && registerMode)
             {
-                conn.EstablishSecureChannel(channel);
                 await conn.SendSealedAsync(PacketType.RegistrationPrompt, new RegistrationPromptPacket
                 {
                     Required = true,
@@ -319,7 +343,7 @@ namespace SFSEnhanced.Server.Networking
                 }
             }
 
-            conn.EstablishSecureChannel(channel, account);
+            conn.AttachAccount(account);
             await conn.SendSealedAsync(PacketType.AuthResult, new AuthResultPacket
             {
                 Accepted = true,

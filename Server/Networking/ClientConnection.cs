@@ -13,6 +13,7 @@ namespace SFSEnhanced.Server.Networking
         private SecureChannel _channel;
         private PlayerAccount _account;
         private string _currentWorldId;
+        private string _currentRoomId;
         private readonly object _stateLock = new object();
 
         public ClientConnection(LidgrenServerConnection transport)
@@ -30,6 +31,12 @@ namespace SFSEnhanced.Server.Networking
         {
             get { lock (_stateLock) return _currentWorldId; }
             set { lock (_stateLock) _currentWorldId = value; }
+        }
+
+        public string CurrentRoomId
+        {
+            get { lock (_stateLock) return _currentRoomId; }
+            set { lock (_stateLock) _currentRoomId = value; }
         }
 
         public bool IsSecure => _channel != null;

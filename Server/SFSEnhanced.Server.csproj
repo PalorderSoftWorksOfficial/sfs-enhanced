@@ -32,8 +32,10 @@
     <PropertyGroup>
       <SfsPackPayloadDir Condition="$(OutputPath.EndsWith('\'))">$(OutputPath.Substring(0, $([MSBuild]::Add($(OutputPath.Length), -1))))</SfsPackPayloadDir>
       <SfsPackPayloadDir Condition="'$(SfsPackPayloadDir)' == ''">$(OutputPath)</SfsPackPayloadDir>
+      <SfsPackToolDll>$(MSBuildThisFileDirectory)../tools/BuildSfsPack/bin/$(Configuration)/net8.0/BuildSfsPack.dll</SfsPackToolDll>
     </PropertyGroup>
-    <Exec Command="dotnet &quot;$(MSBuildThisFileDirectory)..\tools\BuildSfsPack\bin\$(Configuration)\net8.0\BuildSfsPack.dll&quot; --out &quot;$(SfsPackOutput)&quot; --id sfs-enhanced-server --name &quot;SFS Enhanced Dedicated Server&quot; --version $(SfsPackVersion) --description &quot;Cross-platform dedicated server for SFS Enhanced multiplayer. Run SFSEnhanced.Server with .NET 8 installed.&quot; --file &quot;$(MSBuildThisFileDirectory)server.example.json&quot; &quot;Mods/SFSEnhancedServer/server.example.json&quot; --dir &quot;$(SfsPackPayloadDir)&quot; &quot;Mods/SFSEnhancedServer&quot;" />
+    <MSBuild Projects="$(MSBuildThisFileDirectory)../tools/BuildSfsPack/BuildSfsPack.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
+    <Exec Command="dotnet &quot;$(SfsPackToolDll)&quot; --out &quot;$(SfsPackOutput)&quot; --id sfs-enhanced-server --name &quot;SFS Enhanced Dedicated Server&quot; --version $(SfsPackVersion) --description &quot;Cross-platform dedicated server for SFS Enhanced multiplayer. Run SFSEnhanced.Server with .NET 8 installed.&quot; --file &quot;$(MSBuildThisFileDirectory)server.example.json&quot; &quot;Mods/SFSEnhancedServer/server.example.json&quot; --dir &quot;$(SfsPackPayloadDir)&quot; &quot;Mods/SFSEnhancedServer&quot;" />
   </Target>
 
 </Project>

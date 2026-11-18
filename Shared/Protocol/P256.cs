@@ -34,6 +34,13 @@ namespace SFSEnhanced.Shared.Protocol
             y = ToBytes(publicPoint.Y);
         }
 
+        public static bool IsValidPrivateKey(byte[] privateKey)
+        {
+            if (privateKey == null || privateKey.Length != CoordinateBytes) return false;
+            BigInteger value = FromBytes(privateKey);
+            return value.Sign > 0 && value < Order;
+        }
+
         public static bool IsOnCurve(byte[] x, byte[] y)
         {
             if (x == null || y == null || x.Length != CoordinateBytes || y.Length != CoordinateBytes) return false;

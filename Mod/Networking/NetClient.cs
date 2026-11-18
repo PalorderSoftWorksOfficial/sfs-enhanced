@@ -60,6 +60,7 @@ namespace SFSEnhanced.Mod.Networking
         public ServerIdentityPinStore Pins => _pins;
         public event Action IdentityPromptChanged;
         public string CurrentWorldId { get; private set; }
+        public string CurrentRoomId { get; private set; }
         public bool IsConnected => _connected;
         public PlayerProfile SelfProfile { get; private set; }
         public event Action<PacketType, string> OnPacket;
@@ -260,6 +261,7 @@ namespace SFSEnhanced.Mod.Networking
             Interlocked.Increment(ref _connectionGeneration);
             _connected = false;
             CurrentWorldId = null;
+            CurrentRoomId = null;
             PlayerId = null;
             SelfProfile = null;
             _channel = null;
@@ -277,9 +279,16 @@ namespace SFSEnhanced.Mod.Networking
 
         public async Task LeaveWorldAsync()
         {
-            if (!string.IsNullOrEmpty(CurrentWorldId) && IsConnected)
+            if (!string.IsNullOrEmpty(CurrentRoomId) && IsConnected)
+            {
+                await SendAsync(PacketType.RoomLeave, new { });
+            }
+            else if (!string.IsNullOrEmpty(CurrentWorldId) && IsConnected)
+            {
                 await SendAsync(PacketType.WorldLeave, new { });
+            }
             CurrentWorldId = null;
+            CurrentRoomId = null;
         }
 
         public Task UpdateProfileAsync(ProfileUpdatePacket update) => SendAsync(PacketType.ProfileUpdate, update);
@@ -324,7 +333,23 @@ namespace SFSEnhanced.Mod.Networking
                 case PacketType.WorldJoinAck:
                     var worldAck = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldJoinAckPacket>(json);
                     if (worldAck == null) throw new InvalidOperationException("Missing WorldJoinAck payload.");
-                    if (worldAck.Accepted) CurrentWorldId = worldAck.WorldId;
+                    if (worldAck.Accepted)
+                    {
+                        CurrentWorldId = worldAck.WorldId;
+                        CurrentRoomId = null;
+                    }
+                    break;
+                case PacketType.RoomState:
+                    var roomState = Newtonsoft.Json.JsonConvert.DeserializeObject<RoomStatePacket>(json);
+                    if (roomState != null && roomState.Accepted)
+                    {
+                        CurrentRoomId = roomState.Room == null ? null : roomState.Room.RoomId;
+                        CurrentWorldId = roomState.World == null ? null : roomState.World.WorldId;
+                    }
+                    break;
+                case PacketType.RoomClosed:
+                    CurrentRoomId = null;
+                    CurrentWorldId = null;
                     break;
                 case PacketType.ProfileResponse:
                     var profileResponse = Newtonsoft.Json.JsonConvert.DeserializeObject<ProfileResponsePacket>(json);

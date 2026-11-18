@@ -11,6 +11,7 @@ namespace SFSEnhanced.Server.Networking
     public sealed class LidgrenServerTransport
     {
         private const string AppIdentifier = "SFS-Enhanced-Multiplayer";
+        private const int PendingConnectionHeadroom = 32;
         private readonly LidgrenNetServer _peer;
         private readonly ConcurrentDictionary<NetConnection, LidgrenServerConnection> _connections = new();
         public event Action<LidgrenServerConnection> ConnectionAccepted;
@@ -20,7 +21,7 @@ namespace SFSEnhanced.Server.Networking
             var config = new NetPeerConfiguration(AppIdentifier)
             {
                 Port = port,
-                MaximumConnections = maximumConnections,
+                MaximumConnections = Math.Max(16, maximumConnections + PendingConnectionHeadroom),
                 ConnectionTimeout = 15f,
                 PingInterval = 4f
             };
@@ -76,6 +77,10 @@ namespace SFSEnhanced.Server.Networking
                                 break;
                         }
                     }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"[conn] message dropped ({message.MessageType}): {e.GetType().Name}: {e.Message}");
+                    }
                     finally
                     {
                         _peer.Recycle(message);
@@ -83,6 +88,10 @@ namespace SFSEnhanced.Server.Networking
                 }
             }
             catch (OperationCanceledException) { }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[conn] pump stopped by {e.GetType().Name}: {e.Message}");
+            }
             finally
             {
                 Stop();
@@ -92,6 +101,10 @@ namespace SFSEnhanced.Server.Networking
         private void HandleStatus(NetIncomingMessage message)
         {
             var status = (NetConnectionStatus)message.ReadByte();
+            string reason = message.LengthBytes > 1 ? message.ReadString() : null;
+            long id = message.SenderConnection?.RemoteUniqueIdentifier ?? 0;
+            Console.WriteLine($"[conn] status={status} id={id} reason={reason ?? "-"}");
+
             if (status == NetConnectionStatus.Connected)
             {
                 var session = new LidgrenServerConnection(_peer, message.SenderConnection);
@@ -145,7 +158,12 @@ namespace SFSEnhanced.Server.Networking
             return Task.CompletedTask;
         }
 
-        public void Enqueue(byte[] data) => _incoming.TryAdd(data);
+        public void Enqueue(byte[] data)
+        {
+            if (_incoming.IsAddingCompleted) return;
+            try { _incoming.TryAdd(data); }
+            catch (InvalidOperationException) { }
+        }
         public void Complete() => _incoming.CompleteAdding();
         public void Close() { try { _connection.Disconnect("closed"); } catch { } }
     }

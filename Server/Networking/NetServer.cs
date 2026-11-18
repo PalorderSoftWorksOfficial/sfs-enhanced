@@ -6,6 +6,7 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using SFSEnhanced.Server.Persistence;
+using SFSEnhanced.Server.Rooms;
 using SFSEnhanced.Server.Social;
 using SFSEnhanced.Server.World;
 using SFSEnhanced.Shared.Models;
@@ -21,6 +22,7 @@ namespace SFSEnhanced.Server.Networking
         private readonly FriendsService _friends;
         private readonly ClaimsService _claims;
         private readonly ProfileService _profiles;
+        private readonly RoomManager _rooms = new RoomManager();
         private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
         private readonly ConcurrentDictionary<string, UploadBuffer> _pendingUploads = new();
         private readonly ConcurrentDictionary<string, TimeWarpVoteState> _timeWarpVotes = new();
@@ -177,6 +179,21 @@ namespace SFSEnhanced.Server.Networking
                         case PacketType.WorldLeave:
                             HandleWorldLeave(conn, playerId);
                             break;
+                        case PacketType.RoomCreate:
+                            await HandleRoomCreate(conn, playerId, Deserialize<RoomCreatePacket>(json));
+                            break;
+                        case PacketType.RoomListRequest:
+                            await HandleRoomList(conn, playerId);
+                            break;
+                        case PacketType.RoomJoin:
+                            await HandleRoomJoin(conn, playerId, Deserialize<RoomJoinPacket>(json));
+                            break;
+                        case PacketType.RoomLeave:
+                            await HandleRoomLeave(conn, playerId);
+                            break;
+                        case PacketType.RoomClose:
+                            await HandleRoomClose(conn, playerId, Deserialize<RoomClosePacket>(json));
+                            break;
                         case PacketType.WorldUploadChunk:
                             await HandleWorldUploadChunk(conn, playerId, Deserialize<WorldUploadChunkPacket>(json));
                             break;
@@ -254,6 +271,8 @@ namespace SFSEnhanced.Server.Networking
                     HandleWorldLeave(conn, playerId);
                     foreach (var key in _pendingUploads.Keys.Where(key => key.StartsWith(playerId + ":", StringComparison.Ordinal)).ToList())
                         _pendingUploads.TryRemove(key, out _);
+                    foreach (var key in _expiredUploads.Keys.Where(key => key.StartsWith(playerId + ":", StringComparison.Ordinal)).ToList())
+                        _expiredUploads.TryRemove(key, out _);
                     if (_connections.TryGetValue(playerId, out var current) && ReferenceEquals(current, conn))
                     {
                         _connections.TryRemove(playerId, out _);
@@ -301,5 +320,6 @@ namespace SFSEnhanced.Server.Networking
         {
             foreach (var w in _worlds.All()) Console.WriteLine($"  {w.Name} [{w.WorldId}]  builds={w.Builds.Count}  public={w.IsPublic}");
         }
+
     }
 }

@@ -65,6 +65,8 @@ Use restrained accent colors and real SFS/space imagery only where available and
 
 Use the actual SFS UI toolkit and Unity APIs available in this repository. Do not assume a browser or modern UI framework exists in-game. If the native UI toolkit is limited, create reusable components/adapters rather than introducing an incompatible web UI.
 
+Design tokens, geometry and component rules live in `DESIGN_SYSTEM.md`; screen states and interaction paths live in `UX_FLOWS.md`. This document states intent, not capability: `PRODUCT_ARCHITECTURE.md` states what exists today, and `IMPLEMENTATION_PLAN.md` sequences the rest.
+
 ## Architecture and engineering constraints
 
 - Repository: `/home/administrator/sfs-enhanced`.

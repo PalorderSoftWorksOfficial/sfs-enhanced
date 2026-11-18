@@ -47,8 +47,12 @@ Decompiled `Assembly-CSharp` includes `ModLoader.Mod`, `ModLoader.Loader`,
   sequence numbers and a replay window. Tokens are never sent on the wire; the server
   stores only SHA-256 token keys. Invalid MACs drop the packet; only repeated failures
   (32) or failed auth end the connection.
-- Registration/auth modes live in server config; unknown names can auto-register in token
-  mode and receive an issued token as the sealed first response.
+- Wire protocol is **3.0** (`HelloPacket.ProtocolVersion3`). After `AuthChallenge` the server sends
+  a sealed `IdentityProof` (HMAC from the static-key shared secret over the transcript) and only then
+  does the client send its token MAC; a missing/forged proof aborts with `identity_proof_missing` or
+  `identity_proof_invalid`. 2.x peers get `protocol_version`; there is no silent downgrade.
+- Registration/auth modes live in server config. Sign-in never creates an account; only the explicit
+  register mode does, and the registration password proof is answered inside the sealed channel.
 
 ## Verified game hooks (patch targets checked against decompiled source)
 
@@ -61,19 +65,34 @@ Decompiled `Assembly-CSharp` includes `ModLoader.Mod`, `ModLoader.Loader`,
 
 ## Server features
 
-Lidgren UDP transport, secure sessions, multi-room worlds, world upload/download,
-friends, claims, accounts, build spawn/state sync, server-authoritative world time with
-timewarp voting — see `Server/Networking/NetServer.cs` and `docs/ARCHITECTURE.md`.
+Lidgren UDP transport, secure sessions, server-enforced rooms (`Server/Rooms/RoomManager.cs`,
+`NetServer.Rooms.cs`), worlds, world upload/download, friends, claims with overlap policy, accounts,
+filtered chat, build spawn/state sync, server-authoritative world time with timewarp voting — see
+`Server/Networking/NetServer.cs` and `PRODUCT_ARCHITECTURE.md`.
+
+Rooms are live sessions hosting one world save: visibility (public / friends), capacity, one room per
+world, host-only close, auto-close when empty. They are process-scoped and do not survive a restart
+(BUGS B-19); there is no host transfer (B-20). Do not describe them as persistent.
 
 ## Testing
 
 1. `dotnet build SFSEnhanced.sln` — Server/Shared/Directory/Mod all build.
 2. `dotnet run --project Server/SFSEnhanced.Server.csproj -- --config <config.json>`
-3. `dotnet run --project scripts/multiplayer-integration` against it — exercises auth
-   (incl. wrong-token rejection), worlds, chat, friends, claims, build/rocket sync, world
-   time, timewarp voting, replay and tamper rejection, disconnect handling, and prints
-   `MULTI_CLIENT_INTEGRATION_PASSED`.
+3. `dotnet run --project scripts/multiplayer-integration` against it — 14 assertions covering auth
+   (incl. wrong-token rejection and identity-proof omission/forgery), rooms (capacity, visibility,
+   host close, auto-close), worlds, filtered chat, friends, claim overlap, build/rocket sync, world
+   time, timewarp voting, replay and tamper rejection, disconnect handling. Prints
+   `MULTI_CLIENT_INTEGRATION_PASSED`. Run it five times sequentially against one server set.
+   Test servers need `--upload-max-concurrent 1 --upload-idle-seconds 2` for the upload assertions
+   (`QA_PLAN.md`).
 4. `dotnet publish Server/SFSEnhanced.Server.csproj -r linux-x64 -c Release` — cross-platform check.
+
+## Documentation map
+
+`PRODUCT_VISION.md` (product target), `PRODUCT_ARCHITECTURE.md` (current tree), `DESIGN_SYSTEM.md`
+(UI tokens/geometry/components), `UX_FLOWS.md` (screen states and paths), `AGENT_ROLES.md` (role
+briefs and review gates), `IMPLEMENTATION_PLAN.md` (gates), `QA_PLAN.md` (verification protocol),
+`BUGS.md` (verified defects only).
 
 ## Build notes
 

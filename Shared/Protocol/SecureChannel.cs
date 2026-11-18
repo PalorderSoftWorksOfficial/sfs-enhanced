@@ -18,6 +18,8 @@ namespace SFSEnhanced.Shared.Protocol
         private const string IdentityLabel = "SFSEnhanced-ServerIdentity-v1";
         private const string RegistrationLabel = "SFSEnhanced-Registration-v2";
         private const string RegistrationLabelV2 = "SFSEnhanced-Registration-v3";
+        private const string IdentityProofLabel = "SFSEnhanced-IdentityProof-v1";
+        private const string IdentityProofKeyLabel = "SFSEnhanced-IdentityProof-Key-v1";
         private const string RegistrationSaltLabel = "SFSEnhanced-RegistrationSalt-v2";
         private const int PasswordHashRounds = 600000;
         private const int PasswordHashRoundsV2 = 100000;
@@ -105,6 +107,15 @@ namespace SFSEnhanced.Shared.Protocol
             var sessionId = new byte[SessionIdBytes];
             Buffer.BlockCopy(hash, 0, sessionId, 0, SessionIdBytes);
             return sessionId;
+        }
+
+        public static byte[] ComputeIdentityProof(byte[] staticSharedSecret, byte[] transcriptHash)
+        {
+            if (staticSharedSecret == null || staticSharedSecret.Length != 32)
+                throw new ArgumentException("A static-key shared secret is required.", nameof(staticSharedSecret));
+            byte[] key = Sha256(Concat(Encoding.UTF8.GetBytes(IdentityProofKeyLabel), staticSharedSecret));
+            using var hmac = new HMACSHA256(key);
+            return hmac.ComputeHash(Concat(Encoding.UTF8.GetBytes(IdentityProofLabel), transcriptHash));
         }
 
         public static byte[] ComputeIdentityDigest(byte[] staticX, byte[] staticY)

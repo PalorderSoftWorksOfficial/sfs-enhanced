@@ -71,8 +71,17 @@ namespace SFSEnhanced.Server
             Console.WriteLine($"Advertised: {config.Advertise}");
 
             var store = new FileStore(config.DataDir);
-            SecureSessionHandshake.InitializeStaticKey(store);
-            SecureSessionHandshake.InitializeRegistrationSalt(store);
+            try
+            {
+                SecureSessionHandshake.InitializeStaticKey(store);
+                SecureSessionHandshake.InitializeRegistrationSalt(store);
+            }
+            catch (InvalidOperationException e)
+            {
+                Console.Error.WriteLine("Startup failed: " + e.Message);
+                Environment.ExitCode = 1;
+                return;
+            }
             Console.WriteLine($"Identity: {SecureSessionHandshake.IdentityFingerprint}");
             Console.WriteLine($"Registration: {(config.AllowRegistration ? "open" : "closed")}, password {(string.IsNullOrEmpty(config.RegistrationPassword) ? "not required" : "required")}");
             Console.WriteLine($"Uploads: {config.UploadMaxConcurrent} concurrent, {config.UploadIdleSeconds}s idle limit");
@@ -97,7 +106,7 @@ namespace SFSEnhanced.Server
 
             var serverTask = server.RunAsync(cts.Token);
             var directoryTask = publisher.RunAsync(server, cts.Token);
-            Console.WriteLine("Server running. Commands: 'list', 'worlds', 'status', 'stop'");
+            Console.WriteLine("Server running. Commands: 'list', 'worlds', 'rooms', 'status', 'stop'");
             _ = Task.Run(() => ConsoleCommandLoop(server, config, cts));
             await Task.WhenAll(serverTask, directoryTask);
             Console.WriteLine("Server stopped.");
@@ -108,7 +117,11 @@ namespace SFSEnhanced.Server
             while (!cts.IsCancellationRequested)
             {
                 string line = Console.ReadLine();
-                if (line == null) break;
+                if (line == null)
+                {
+                    cts.Cancel();
+                    break;
+                }
                 switch (line.Trim().ToLowerInvariant())
                 {
                     case "stop":
@@ -120,14 +133,19 @@ namespace SFSEnhanced.Server
                     case "worlds":
                         server.PrintWorlds();
                         break;
+                    case "rooms":
+                        server.PrintRooms();
+                        break;
                     case "status":
                         Console.WriteLine($"  {config.ServerName} on :{config.Port}");
                         Console.WriteLine($"  players={server.ConnectedPlayerCount}/{config.MaxPlayers}");
+                        Console.WriteLine($"  rooms={server.RoomCount}");
+                        Console.WriteLine($"  uploads pending={server.PendingUploadCount} expired={server.ExpiredUploadCount}");
                         Console.WriteLine($"  advertise={config.Advertise}");
                         Console.WriteLine($"  identity={SecureSessionHandshake.IdentityFingerprint}");
                         break;
                     default:
-                        Console.WriteLine("Unknown command. Try: list, worlds, status, stop");
+                        Console.WriteLine("Unknown command. Try: list, worlds, rooms, status, stop");
                         break;
                 }
             }

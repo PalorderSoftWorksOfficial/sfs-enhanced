@@ -26,11 +26,14 @@ namespace SFSEnhanced.Mod.UI.App
         public bool StatusIsError;
 
         public readonly List<ServerListing> Servers = new List<ServerListing>();
-        public readonly List<WorldSummary> Worlds = new List<WorldSummary>();
         public readonly List<ChatLine> Chat = new List<ChatLine>();
 
         public bool LoadingServers;
-        public bool LoadingWorlds;
+        public string DirectoryError;
+        public readonly List<RoomSummary> Rooms = new List<RoomSummary>();
+        public bool LoadingRooms;
+        public string CurrentRoomId;
+        public string CurrentRoomName;
 
         public string CurrentWorldId;
         public string CurrentWorldName;
@@ -97,8 +100,11 @@ namespace SFSEnhanced.Mod.UI.App
             LocalClaimId = null;
             PendingVote = null;
             LoadingServers = false;
-            LoadingWorlds = false;
-            Worlds.Clear();
+            LoadingRooms = false;
+            CurrentRoomId = null;
+            CurrentRoomName = null;
+            DirectoryError = null;
+            Rooms.Clear();
         }
     }
 }

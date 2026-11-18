@@ -163,7 +163,7 @@ namespace SFSEnhanced.Mod.UI
             if (_mod.Client.IsConnected)
             {
                 RefreshFriends();
-                RefreshWorlds();
+                RefreshRooms();
             }
         }
 
@@ -458,36 +458,39 @@ namespace SFSEnhanced.Mod.UI
             }
 
             _state.LoadingServers = true;
+            _state.DirectoryError = null;
             _state.NotifyContent();
             _ = LoadServersAsync(url);
         }
 
         private async Task LoadServersAsync(string url)
         {
-            var servers = await _directory.ListAsync(url).ConfigureAwait(false);
+            ServerDirectoryResult result = await _directory.ListAsync(url).ConfigureAwait(false);
             RunOnMainThread(() =>
             {
                 _state.Servers.Clear();
-                _state.Servers.AddRange(servers);
+                _state.Servers.AddRange(result.Servers);
+                _state.DirectoryError = result.Error;
                 _state.LoadingServers = false;
-                _state.SetStatus(servers.Count == 0 ? "The directory returned no servers." : $"Directory returned {servers.Count} server(s).");
+                if (result.Error != null) _state.SetStatus("The server directory could not be loaded.", true);
+                else _state.SetStatus(result.Servers.Count == 0 ? "The directory returned no servers." : $"Directory returned {result.Servers.Count} server(s).");
                 _state.NotifyContent();
             });
         }
 
-        public void RefreshWorlds()
+        public void RefreshRooms()
         {
             if (!_state.Connected)
             {
                 SetStatus("Connect to a server first.", true);
                 return;
             }
-            _state.LoadingWorlds = true;
+            _state.LoadingRooms = true;
             _state.NotifyContent();
-            _ = _mod.Client.SendAsync(PacketType.WorldListRequest, new { });
+            _ = _mod.Client.SendAsync(PacketType.RoomListRequest, new { });
         }
 
-        public void CreateWorld(string name, bool isPublic)
+        public void CreateRoom(string name, string description, bool isPublic, string capacityText)
         {
             if (!_state.Connected)
             {
@@ -497,16 +500,75 @@ namespace SFSEnhanced.Mod.UI
             string trimmed = (name ?? string.Empty).Trim();
             if (trimmed.Length == 0)
             {
-                SetStatus("Enter a world name.", true);
+                SetStatus("Enter a room name.", true);
                 return;
             }
             if (trimmed.Length > 48)
             {
-                SetStatus("World names are limited to 48 characters.", true);
+                SetStatus("Room names are limited to 48 characters.", true);
                 return;
             }
-            _ = _mod.Client.SendAsync(PacketType.WorldCreate, new WorldCreatePacket { Name = trimmed, IsPublic = isPublic });
-            SetStatus(isPublic ? "Creating a public world..." : "Creating a private world...");
+            string capacityValue = (capacityText ?? string.Empty).Trim();
+            if (capacityValue.Length == 0) capacityValue = "8";
+            if (!int.TryParse(capacityValue, out int capacity) || capacity < 2 || capacity > 64)
+            {
+                SetStatus("Room capacity must be a whole number between 2 and 64.", true);
+                return;
+            }
+            if ((description ?? string.Empty).Length > 160)
+            {
+                SetStatus("Room descriptions are limited to 160 characters.", true);
+                return;
+            }
+
+            _ = _mod.Client.SendAsync(PacketType.RoomCreate, new RoomCreatePacket
+            {
+                Name = trimmed,
+                Description = (description ?? string.Empty).Trim(),
+                Visibility = isPublic ? RoomVisibility.Public : RoomVisibility.Friends,
+                Capacity = capacity
+            });
+            SetStatus(isPublic ? "Opening a public room..." : "Opening a friends-only room...");
+        }
+
+        public void JoinRoom(string roomId, string roomName)
+        {
+            if (!_state.Connected)
+            {
+                SetStatus("Connect to a server first.", true);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(roomId)) return;
+            _ = _mod.Client.SendAsync(PacketType.RoomJoin, new RoomJoinPacket { RoomId = roomId });
+            SetStatus($"Joining {roomName ?? "room"}...");
+        }
+
+        public void LeaveRoom()
+        {
+            _state.CurrentRoomId = null;
+            _state.CurrentRoomName = null;
+            _state.CurrentWorldId = null;
+            _state.CurrentWorldName = null;
+            _state.CurrentWorldBuilds = 0;
+            _state.CurrentWorldPlayers = 0;
+            _state.LocalClaimId = null;
+            _state.PendingVote = null;
+            _mod.Builds.ResetWorld();
+            _ = LeaveWorldOnServerAsync();
+            SetStatus("Left the room.");
+            _state.NotifyContent();
+            RefreshRooms();
+        }
+
+        public void CloseRoom()
+        {
+            if (string.IsNullOrEmpty(_state.CurrentRoomId))
+            {
+                SetStatus("You are not hosting a room.", true);
+                return;
+            }
+            _ = _mod.Client.SendAsync(PacketType.RoomClose, new RoomClosePacket { RoomId = _state.CurrentRoomId });
+            SetStatus("Closing the room...");
         }
 
         public void JoinWorld(string worldId, string worldName)
@@ -524,6 +586,8 @@ namespace SFSEnhanced.Mod.UI
 
         public void LeaveWorld()
         {
+            _state.CurrentRoomId = null;
+            _state.CurrentRoomName = null;
             _state.CurrentWorldId = null;
             _state.CurrentWorldName = null;
             _state.CurrentWorldBuilds = 0;
@@ -736,32 +800,69 @@ namespace SFSEnhanced.Mod.UI
                     _state.Notify();
                     break;
                 }
-                case PacketType.WorldListResponse:
+                case PacketType.RoomListResponse:
                 {
-                    WorldListResponsePacket list = Newtonsoft.Json.JsonConvert.DeserializeObject<WorldListResponsePacket>(json);
+                    RoomListResponsePacket list = Newtonsoft.Json.JsonConvert.DeserializeObject<RoomListResponsePacket>(json);
                     if (list == null)
                     {
-                        _state.LoadingWorlds = false;
-                        SetStatus("The world list was unavailable.", true);
+                        _state.LoadingRooms = false;
+                        SetStatus("The room list was unavailable.", true);
                         _state.NotifyContent();
                         break;
                     }
-                    _state.Worlds.Clear();
-                    if (list.Worlds != null) _state.Worlds.AddRange(list.Worlds);
-                    _state.LoadingWorlds = false;
+                    _state.Rooms.Clear();
+                    if (list.Rooms != null) _state.Rooms.AddRange(list.Rooms);
+                    _state.LoadingRooms = false;
 
-                    if (!string.IsNullOrEmpty(_state.CurrentWorldId))
+                    if (!string.IsNullOrEmpty(_state.CurrentRoomId))
                     {
-                        WorldSummary current = _state.Worlds.FirstOrDefault(w => w.WorldId == _state.CurrentWorldId);
+                        RoomSummary current = _state.Rooms.FirstOrDefault(r => r.RoomId == _state.CurrentRoomId);
                         if (current != null)
                         {
-                            _state.CurrentWorldName = current.Name;
-                            _state.CurrentWorldBuilds = current.BuildCount;
+                            _state.CurrentRoomName = current.Name;
                             _state.CurrentWorldPlayers = current.PlayersOnline;
+                            _state.CurrentWorldBuilds = 0;
                         }
                     }
-                    SetStatus($"Found {_state.Worlds.Count} public world(s).");
+                    SetStatus($"Found {_state.Rooms.Count} open room(s).");
                     _state.NotifyContent();
+                    break;
+                }
+                case PacketType.RoomState:
+                {
+                    RoomStatePacket room = Newtonsoft.Json.JsonConvert.DeserializeObject<RoomStatePacket>(json);
+                    if (room == null)
+                    {
+                        SetStatus("The room response was invalid.", true);
+                        break;
+                    }
+                    if (!room.Accepted)
+                    {
+                        _state.LoadingRooms = false;
+                        SetStatus("Room action refused: " + room.Reason, true);
+                        _state.NotifyContent();
+                        break;
+                    }
+                    ApplyRoomState(room);
+                    _state.NotifyContent();
+                    RefreshRooms();
+                    break;
+                }
+                case PacketType.RoomClosed:
+                {
+                    RoomClosedPacket closed = Newtonsoft.Json.JsonConvert.DeserializeObject<RoomClosedPacket>(json);
+                    if (closed == null || (!string.IsNullOrEmpty(_state.CurrentRoomId) && closed.RoomId != _state.CurrentRoomId)) break;
+                    _state.CurrentRoomId = null;
+                    _state.CurrentRoomName = null;
+                    _state.CurrentWorldId = null;
+                    _state.CurrentWorldName = null;
+                    _state.CurrentWorldBuilds = 0;
+                    _state.CurrentWorldPlayers = 0;
+                    _state.PendingVote = null;
+                    _mod.Builds.ResetWorld();
+                    SetStatus(closed.Reason ?? "The room closed.");
+                    _state.NotifyContent();
+                    RefreshRooms();
                     break;
                 }
                 case PacketType.WorldJoinAck:
@@ -778,8 +879,8 @@ namespace SFSEnhanced.Mod.UI
                         break;
                     }
                     _state.CurrentWorldId = join.WorldId;
-                    WorldSummary summary = _state.Worlds.FirstOrDefault(w => w.WorldId == join.WorldId);
-                    if (summary != null) _state.CurrentWorldName = summary.Name;
+                    _state.CurrentRoomId = null;
+                    _state.CurrentRoomName = null;
                     _state.CurrentWorldBuilds = join.Builds == null ? 0 : join.Builds.Count;
                     _state.CurrentWorldPlayers = join.PlayersOnline == null ? 0 : join.PlayersOnline.Count;
                     _state.LocalClaimId = FindOwnClaim(join);
@@ -848,7 +949,7 @@ namespace SFSEnhanced.Mod.UI
                     if (vote == null) break;
                     _state.PendingVote = vote;
                     _state.NotifyContent();
-                    Navigate(AppShell.WorldsPageId);
+                    Navigate(AppShell.RoomsPageId);
                     break;
                 }
                 case PacketType.TimeWarpResult:
@@ -891,6 +992,35 @@ namespace SFSEnhanced.Mod.UI
                     break;
                 }
             }
+        }
+
+        private void ApplyRoomState(RoomStatePacket room)
+        {
+            if (room.Room == null)
+            {
+                _state.CurrentRoomId = null;
+                _state.CurrentRoomName = null;
+                _state.CurrentWorldId = null;
+                _state.CurrentWorldName = null;
+                _state.CurrentWorldBuilds = 0;
+                _state.CurrentWorldPlayers = 0;
+                _state.LocalClaimId = null;
+                _state.PendingVote = null;
+                _mod.Builds.ResetWorld();
+                SetStatus("Left the room.");
+                return;
+            }
+
+            _state.CurrentRoomId = room.Room.RoomId;
+            _state.CurrentRoomName = room.Room.Name;
+            _state.CurrentWorldId = room.World == null ? room.Room.WorldId : room.World.WorldId;
+            _state.CurrentWorldName = room.Room.Name;
+            _state.CurrentWorldBuilds = room.World?.Builds == null ? 0 : room.World.Builds.Count;
+            _state.CurrentWorldPlayers = room.Room.PlayersOnline;
+            _state.LocalClaimId = room.World == null ? null : FindOwnClaim(room.World);
+            _state.PendingInviteWorldId = null;
+            _state.PendingInviteFrom = null;
+            SetStatus($"In {room.Room.Name} ({_state.CurrentWorldBuilds} builds, {room.Room.PlayersOnline}/{room.Room.Capacity} players).");
         }
 
         private string FindOwnClaim(WorldJoinAckPacket join)

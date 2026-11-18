@@ -5,8 +5,9 @@ per-server profile foundation). It is not a target-state design document.
 
 ## 1. Shape of the product
 
-SFS Enhanced is a Spaceflight Simulator mod plus a dedicated server. The mod adds multiplayer to
-the stock game; the server owns world state, builds, claims, time warp, chat, friends and accounts.
+SFS Enhanced is a Spaceflight Simulator mod plus a dedicated server. The mod adds multiplayer to the
+stock game; the server owns room and world state, builds, claims, time warp, chat, friends and
+accounts.
 
 Three deployables, one protocol:
 
@@ -26,18 +27,24 @@ Lidgren UDP with a JSON envelope per packet. `Shared/Protocol/PacketType.cs` is 
 registry; `Shared/Protocol/Packets.cs` holds the DTOs. Packet numbers are grouped by domain
 (connection, discovery, world lifecycle, builds, time warp, social, claims, chat, profile, errors).
 
-Authentication is a mutual challenge/response:
+Authentication is a mutual challenge/response. The wire protocol version is **3.0**
+(`HelloPacket.ProtocolVersion3`); a 2.x client is refused with `protocol_version` rather than being
+silently downgraded, and the same is true in the other direction.
 
 1. `Hello` carries protocol version, player name, nonce and mode (`token` or `register`).
 2. `HelloAck` returns the server challenge and exchange identifier.
-3. `AuthChallenge` / `AuthResponse` exchange ephemeral and static **P-256** points (not X25519) plus
-   an HMAC proof over the transcript.
-4. `AuthResult` returns `PlayerId`, session id and a bearer token to persist.
+3. `AuthResponse` sends the client ephemeral point; `AuthChallenge` returns the server ephemeral and
+   static **P-256** points (not X25519) and the exchange identifier.
+4. The client recomputes the fingerprint from the validated static point, compares it to the
+   per-endpoint pin, derives the channel, and waits for a sealed `IdentityProof`.
+5. The server proves possession of the static key with `HMAC(SHA-256("SFSEnhanced-IdentityProof-v1" ‖
+   staticSharedSecret), label ‖ transcriptHash)`. Only a peer holding the private key can compute it.
+6. The client then sends the token MAC in the final `AuthResponse`; `AuthResult` returns `PlayerId`,
+   session id and a new bearer token when one was issued.
 
-The client verifies the server's identity between steps 3 and 4: it recomputes the fingerprint from
-the validated static point and compares it to a per-endpoint pin. An unpinned or changed identity
-stops the handshake before the token proof or registration secret is sent, so an untrusted endpoint
-never receives a credential MAC and no account is created on it. See §5.1.
+So the pin decision happens before any credential is derived, and the token MAC travels only after the
+server has proven key possession. A missing proof yields `identity_proof_missing`, a bad one
+`identity_proof_invalid`, and in both cases no MAC is sent. See §5.1.
 
 Signing in and registering are distinct wire modes. `ModeToken` authenticates an account that already
 exists on that server and never creates one; an unknown name returns `unknown_account`. `ModeRegister`
@@ -46,11 +53,10 @@ open and, if configured, the registration password proof is valid. The client ne
 signing in to registering, and every rejection carries a machine-readable code
 (`Shared/Protocol/Packets.cs`, `AuthErrorCode`) so the UI can name the actual problem.
 
-A registration password is never sent in the clear. When a server requires one, `HelloAck` marks it,
-and after the client has validated the server identity key and derived the session channel, the server
-sends a sealed `RegistrationPrompt` (`PacketType.RegistrationPrompt`) carrying its per-instance salt.
-Only a peer holding the static private key can produce that sealed frame, so the client answers with a
-sealed `RegistrationAuth` HMAC over the password hash and transcript. The salt lives in
+A registration password is never sent in the clear. When a server requires one, `HelloAck` marks it.
+After the identity proof and the token MAC, and only in register mode, the server sends a sealed
+`RegistrationPrompt` (`PacketType.RegistrationPrompt`) carrying its per-instance salt. The client
+answers with a sealed `RegistrationAuth` HMAC over the password hash and transcript. The salt lives in
 `data/system/registration_salt.json`. This removes passive capture and cross-server precomputation; it
 is not a PAKE, so a server that verifies the password can still test guesses offline.
 
@@ -64,8 +70,11 @@ graph that spans servers, and no directory-level account.
 command loop (`list`, `worlds`, `status`, `stop`). The loop treats end-of-input as shutdown, so
 `< /dev/null` is a valid non-interactive run.
 
-`NetServer` owns per-connection state (`ClientConnection`), session counting, world hosting and
-fan-out. Handlers are split by domain, with `NetServer.Profile.cs` added by this slice.
+`NetServer` owns per-connection state (`ClientConnection`), session counting, room and world hosting
+and fan-out. Handlers are split by domain: `NetServer.Worlds.cs`, `NetServer.Social.cs`,
+`NetServer.Profile.cs`, `NetServer.TimeWarp.cs`, `NetServer.Limits.cs` and `NetServer.Rooms.cs`.
+`RoomManager` holds live rooms; `ClaimsService`, `FriendsService` and `ProfileService` hold social
+rules.
 
 Persistence is a file store (`Server/Persistence/FileStore.cs`) keyed by account and world id;
 `AccountService` handles registration and token verification. No database is involved.
@@ -73,8 +82,9 @@ Persistence is a file store (`Server/Persistence/FileStore.cs`) keyed by account
 Transport pacing: `LidgrenServerTransport.PumpAsync` uses an adaptive idle backoff (2 ms while
 there is traffic, ramping to 10 ms when idle), which cut steady-state idle CPU from ~118% to ~9%.
 
-Rate limiting exists for profile updates (5 burst, then 1 per second per connection). Most other
-packet families are still unthrottled; that is tracked as a gap, not as a feature.
+Rate limits exist per player for chat (8 burst / 2 per second), profile updates (5 / 1), world create,
+world join, download, upload chunks, claims, invites, room create (6 / 0.5) and room join (8 / 1).
+Buckets are per process, so a multi-process deployment does not share limits; that is a documented gap.
 
 Social rules enforced server-side:
 
@@ -84,6 +94,14 @@ Social rules enforced server-side:
   control characters, zero-width/bidi characters and angle brackets, and filters `Online`,
   `LastSeenUtc` and `CurrentWorldId` for non-self viewers.
 - Profile updates are self-only; there is no packet that edits another account.
+- `ChatTextFilter` refuses `<`/`>` (`chat_rejected`), strips control/zero-width/bidi characters,
+  collapses whitespace, caps at 512 characters and refuses empty-after-filter text. A rate-limited
+  message returns `chat_rate_limited` instead of disappearing.
+- Region claims are bounded and may not overlap another player's region or contain another player's
+  build; identical re-claims are idempotent. Build claims only cover a build the caller owns.
+- Upload buffers expire after `--upload-idle-seconds`; a late chunk receives `upload_expired`, chunk 0
+  restarts the upload with the same id, the operator log records the expiry and `status` reports
+  pending/expired counts.
 
 ## 4. Client mod
 
@@ -105,7 +123,7 @@ ScreenManager → MultiplayerScreen (BasicMenu, Escape/close aware)
                      ↓ BuildWindow
                  AppShell (window, nav rail, header, chrome, content)
                      ↓ Build / Update
-                 AppPage implementations (Home, Servers, Worlds, Friends, Chat, Profile, Settings)
+                 AppPage implementations (Home, Servers, Rooms, Friends, Chat, Profile, Settings)
 ```
 
 Two notification channels drive rendering:
@@ -149,6 +167,19 @@ In-flight behaviour: the shell refuses to open in `World_PC` and F8 is gated the
 pausing `Screen_Menu` freezes the simulation and removes flight input. A non-pausing overlay is
 future work, not a shipped feature.
 
+### 4.2 Rooms in the client
+
+`RoomsPage` is the room surface, not a renamed world list. It renders three states derived from real
+state: a current-room card (name, builds, players, id, LEAVE, host-only CLOSE ROOM, claim toggle,
+time-warp vote), an open-room form (name, capacity, public/friends toggle, description, OPEN ROOM), or
+the disconnected empty state. The list shows public rooms plus the host's and friends' friends-only
+rooms, with `host · players/capacity · visibility · description`, a JOIN action unless the room is
+full or current, and a disclosed truncation. Room packets drive `NetClient.CurrentRoomId` and
+`AppState`, and `RoomClosed` returns the page to the lobby with the host's reason.
+
+`ServerDirectoryClient` returns `ServerDirectoryResult { Servers, Error }`; the Servers page renders a
+distinct error state (heading, reason, RETRY) instead of an empty list.
+
 ## 5. Profile slice (what actually exists)
 
 Per-server account fields added to `PlayerAccount`: display name, bio, avatar accent, privacy
@@ -187,36 +218,50 @@ the next connection, not on the current session.
   readback, commits, verifies again, and clears the staged key. A dropped write is reported as failure
   and leaves the previous document intact.
 
+Tier 2 is now implemented as the sealed `IdentityProof` step: the server proves static-key possession
+before the client sends its token MAC, so a peer that merely relays the exchange cannot harvest a
+credential proof. The proof is bound to the transcript and derives its key from the static-key ECDH
+secret, which only the key holder can compute.
+
 Honest limits: trust-on-first-use cannot detect an attacker present on the very first connection.
 The UI says "trusted on this device", never "verified", and instructs out-of-band comparison of the
 fingerprint the server console prints. Pins live in plaintext PlayerPrefs, so they defend against
-network attackers, not against a compromised local machine.
+network attackers, not against a compromised local machine. Registration passwords are not a PAKE: a
+server that verifies one can still test guesses offline, and the token MAC remains a transcript-bound
+verifier of `SHA-256(token)`, which is only infeasible to guess because tokens are 32 random bytes.
 
 ## 6. Truthfulness rules baked into the UI
 
-- "Worlds" is the transitional label. A world is currently both the live save and the discovery
-  entry. Rooms, creations, permissions, capacities and roles do not exist and are not shown.
+- Rooms are real: the server enforces visibility, capacity, host-only close, one room per world and
+  auto-close when empty. A room is not presented as a persistent space; it is a live session hosting
+  one world save, and the copy says so.
+- Worlds remain the save/simulation layer and are not a separate browser page. Creations, rating,
+  roles, permissions, moderation queues and platform-wide identity do not exist and have no UI.
 - Profiles are per-server. No screen claims a platform-wide account.
-- Lists show real counts and disclose truncation ("Showing 3 of 12 servers", "latest 12 messages").
-- Empty and offline states are explicit; nothing is rendered as a fake success.
+- Lists show real counts and disclose truncation ("Showing 3 of 12 servers", "Showing 3 of N rooms").
+- Empty, offline and error states are distinct; nothing is rendered as a fake success.
 
 ## 7. Known gaps
 
-- D2 mount chain: unverified in a real client (see 4.1).
-- Chat text is relayed verbatim; TMP rich text is disabled and profile fields are sanitized, but
-  chat markup/abuse filtering is not implemented.
-- Registration-password servers are not usable from the shell.
-- The registration password uses a global fixed salt, so the wire proof is an offline verifier. Fixing
-  it needs a per-instance salt and a versioned KDF/protocol bump; it is not changed in Gate 2.
-- Tier 2 identity proof (server proves static-key possession with an HMAC before the client reveals its
-  token MAC) is deferred, not shipped. Gate 2 achieves the same ordering with a client-side gate.
-- The server still creates accounts on the register and no-account paths without validating the token
-  proof. This is inherent to unauthenticated first registration; the client-side gate means no proof
-  and no account are sent to an untrusted endpoint, and a registration password authenticates the
-  server for operators who need it.
-- World download authorization, upload caps and ordering, save-import sanitisation, claim bounds,
-  controller release and per-family rate limits are implemented in `NetServer.Worlds.cs`,
-  `NetServer.Limits.cs`, `NetServer.Social.cs` and `SfsWorldSanitizer`.
+- D2 mount chain: unverified in a real client (see 4.1). Every visual and mount claim is unproven.
+- Rooms are process-scoped: a server restart drops room listings while worlds persist (BUGS B-19).
+  A room whose host leaves stays open until it is empty or the host returns (BUGS B-20); there is no
+  host transfer.
+- Friends-only rooms are discoverable by accepted friends only. There is no room-id share or
+  invite-to-room packet; friend invites still target a world and are routed into its room.
+- Registration-password servers are supported by the connect flow (sealed prompt), but the in-game
+  presentation of that flow is unverified because the shell has not run in game.
+- A PAKE is still not implemented. The per-instance salt removes cross-server reuse and the sealed
+  prompt removes passive capture; a verifying server can still test guesses offline.
+- Trust-on-first-use cannot detect a first-contact impostor; pins are plaintext on the device.
+- Rate-limit buckets and room state are per process, so a multi-process deployment does not share
+  either.
+- World download authorization, upload caps and ordering, save-import sanitisation, claim bounds and
+  overlap policy, controller release, chat filtering and per-family rate limits are implemented in
+  `NetServer.Worlds.cs`, `NetServer.Limits.cs`, `NetServer.Social.cs`, `ChatTextFilter`,
+  `ClaimsService` and `SfsWorldSanitizer`.
+- The client does not yet surface `ErrorPacket.Code`; it shows the server message. Codes exist for
+  callers that need to branch.
 - Region overlap policy is undefined; overlapping claims are allowed.
 - Rate-limit buckets are still per-process, so a multi-process deployment does not share limits.
 - Upload buffers expire lazily from the world-time loop; there is no dedicated background worker.

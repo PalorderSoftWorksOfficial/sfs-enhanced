@@ -13,7 +13,7 @@ namespace SFSEnhanced.Mod.UI.App
     {
         public const string HomePageId = "home";
         public const string ServersPageId = "servers";
-        public const string WorldsPageId = "worlds";
+        public const string RoomsPageId = "rooms";
         public const string FriendsPageId = "friends";
         public const string ChatPageId = "chat";
         public const string ProfilePageId = "profile";

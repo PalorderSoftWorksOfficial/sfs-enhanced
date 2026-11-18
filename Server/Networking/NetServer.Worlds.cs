@@ -51,6 +51,12 @@ namespace SFSEnhanced.Server.Networking
                 await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "World not found." });
                 return;
             }
+            var hostingRoom = _rooms.FindByWorld(world.WorldId);
+            if (hostingRoom != null)
+            {
+                await HandleRoomJoin(conn, playerId, new RoomJoinPacket { RoomId = hostingRoom.RoomId });
+                return;
+            }
             if (!CanAccessWorld(world, playerId))
             {
                 await conn.SendAsync(PacketType.WorldJoinAck, new WorldJoinAckPacket { Accepted = false, RejectReason = "This world is private." });
@@ -68,12 +74,15 @@ namespace SFSEnhanced.Server.Networking
         private void HandleWorldLeave(ClientConnection conn, string playerId)
         {
             string worldId = conn.CurrentWorldId;
+            string roomId = conn.CurrentRoomId;
             conn.CurrentWorldId = null;
+            conn.CurrentRoomId = null;
             if (playerId != null)
             {
                 _friends.SetCurrentWorld(playerId, null);
                 ReleaseControlledBuilds(worldId, playerId);
             }
+            CloseRoomIfEmpty(roomId);
         }
 
         private async Task HandleWorldUploadChunk(ClientConnection conn, string playerId, WorldUploadChunkPacket chunk)
@@ -90,10 +99,23 @@ namespace SFSEnhanced.Server.Networking
                 await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload chunk is larger than the server allows." });
                 return;
             }
+            if (chunk.ChunkIndex == 0)
+            {
+                TryTakeExpiredUpload(playerId, chunk.UploadId);
+            }
+            else if (TryTakeExpiredUpload(playerId, chunk.UploadId))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket
+                {
+                    Code = "upload_expired",
+                    Message = $"That upload expired after {Math.Max(1, _config.UploadIdleSeconds)} seconds of inactivity. Start the upload again from the first chunk."
+                });
+                return;
+            }
             if (!TryConsume(playerId, "world-upload", 120, 40))
             {
                 AbortUpload(playerId, chunk.UploadId);
-                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "Upload is arriving too fast. Wait a moment and retry." });
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Code = "upload_rate_limited", Message = "Upload is arriving too fast. Wait a moment and retry." });
                 return;
             }
             string activeUpload = _activeUploads.TryGetValue(playerId, out string active) ? active : null;
@@ -283,7 +305,7 @@ namespace SFSEnhanced.Server.Networking
             build.ControllingPlayerId = playerId;
             var saved = _worlds.AddOrUpdateBuild(conn.CurrentWorldId, build);
             if (saved == null) return;
-            if (existing == null) _claims.Create(conn.CurrentWorldId, playerId, conn.Account.PlayerName, new ClaimCreatePacket { WorldId = conn.CurrentWorldId, Shape = ClaimShape.Build, BuildId = saved.BuildId });
+            if (existing == null) _claims.Create(conn.CurrentWorldId, playerId, conn.Account.PlayerName, new ClaimCreatePacket { WorldId = conn.CurrentWorldId, Shape = ClaimShape.Build, BuildId = saved.BuildId }, out _);
             await BroadcastToWorld(conn.CurrentWorldId, PacketType.BuildSpawn, saved, playerId);
         }
 

@@ -27,6 +27,8 @@ sealed class PeerTransport : ISecureTransport
     private readonly BlockingCollection<RawFrame> _frames = new();
     private readonly CancellationTokenSource _cts = new();
     private volatile bool _stopped;
+    private volatile string _pumpError;
+    private volatile string _lastStatus;
 
     private readonly Task _pump;
 
@@ -86,6 +88,9 @@ sealed class PeerTransport : ISecureTransport
         return frames;
     }
 
+    public string PumpError => _pumpError;
+    public string LastStatus => _lastStatus;
+
     private async Task PumpAsync()
     {
         try
@@ -107,7 +112,15 @@ sealed class PeerTransport : ISecureTransport
                     }
                     else if (message.MessageType == NetIncomingMessageType.StatusChanged)
                     {
-                        if ((NetConnectionStatus)message.ReadByte() == NetConnectionStatus.Disconnected) break;
+                        var status = (NetConnectionStatus)message.ReadByte();
+                        string reason = message.LengthBytes > 1 ? message.ReadString() : null;
+                        _lastStatus = status + (reason == null ? string.Empty : " (" + reason + ")");
+                        Console.WriteLine($"[peer] status={status} reason={reason ?? "-"}");
+                        if (status == NetConnectionStatus.Disconnected)
+                        {
+                            _pumpError = "peer disconnected during session: " + (reason ?? "no reason");
+                            break;
+                        }
                     }
                 }
                 finally { _peer.Recycle(message); }
@@ -115,6 +128,11 @@ sealed class PeerTransport : ISecureTransport
         }
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) { }
+        catch (Exception e)
+        {
+            _pumpError = $"pump failed: {e.GetType().Name}: {e.Message}";
+            Console.WriteLine("[peer] " + _pumpError);
+        }
         finally
         {
             try
@@ -148,12 +166,36 @@ sealed class TestPeer : IDisposable
     private readonly BlockingCollection<RawFrame> _frames = new();
     private readonly CancellationTokenSource _cts = new();
     private SecureChannel _channel;
+    private bool _dropped;
 
     private TestPeer(NetPeer peer, NetConnection connection)
     {
         _peer = peer;
         _connection = connection;
         _ = PumpAsync();
+    }
+
+    private static async Task ClosePeerAsync(NetPeer peer, NetConnection connection)
+    {
+        try { connection?.Disconnect("test done"); } catch { }
+        for (int spin = 0; spin < 20; spin++)
+        {
+            NetIncomingMessage message = peer.ReadMessage();
+            if (message == null)
+            {
+                await Task.Delay(5);
+                continue;
+            }
+            peer.Recycle(message);
+        }
+        try { peer.Shutdown("test done"); } catch { }
+    }
+
+    public void DropAbruptly()
+    {
+        _dropped = true;
+        _cts.Cancel();
+        try { _peer.Shutdown("abrupt"); } catch { }
     }
 
     public static Task<TestPeer> ConnectAsync(string name, string authToken = null, bool createAccount = false, int port = 0, string registrationPassword = null)
@@ -165,6 +207,7 @@ sealed class TestPeer : IDisposable
             await OpenAsync(name, authToken, createAccount, port, registrationPassword);
         await transport.StopAsync();
         if (!result.Accepted) throw new InvalidOperationException("Handshake rejected: " + (result.RejectReason ?? "unknown"));
+        if (!result.IdentityProofVerified) throw new InvalidOperationException("The live server never proved possession of its identity key.");
         var session = new TestPeer(peer, connection) { PlayerId = result.PlayerId, IssuedToken = result.IssuedToken };
         session._channel = result.Channel;
         foreach (RawFrame frame in transport.Drain()) session.EnqueueFrame(frame);
@@ -176,8 +219,7 @@ sealed class TestPeer : IDisposable
         (NetPeer peer, NetConnection connection, PeerTransport transport, SecureHandshakeResult result) =
             await OpenAsync(name, authToken, createAccount, port, registrationPassword);
         await transport.StopAsync();
-        try { connection.Disconnect("test done"); } catch { }
-        try { peer.Shutdown("test done"); } catch { }
+        await ClosePeerAsync(peer, connection);
         return result;
     }
 
@@ -185,26 +227,48 @@ sealed class TestPeer : IDisposable
         string name, string authToken, bool createAccount, int port, string registrationPassword)
     {
         int targetPort = port > 0 ? port : TestSettings.Port;
-        var config = new NetPeerConfiguration(AppIdentifier)
-        {
-            ConnectionTimeout = 15f,
-            PingInterval = 4f,
-            MaximumConnections = 1
-        };
-        config.EnableMessageType(NetIncomingMessageType.StatusChanged);
-        config.EnableMessageType(NetIncomingMessageType.Data);
-        var peer = new NetPeer(config);
-        peer.Start();
-        NetConnection connection = peer.Connect("127.0.0.1", targetPort);
-        var connectedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = WatchStatusAsync(peer, connectedTcs);
-        await Task.WhenAny(connectedTcs.Task, Task.Delay(8000));
-        if (connection.Status != NetConnectionStatus.Connected) throw new InvalidOperationException("Transport connection failed.");
+        string lastFailure = null;
 
-        var transport = new PeerTransport(peer, connection);
-        var handshake = new SecureHandshakeClient(transport);
-        SecureHandshakeResult result = await handshake.RunAsync(name, authToken ?? "", "0.1.0", registrationPassword, CancellationToken.None, null, createAccount);
-        return (peer, connection, transport, result);
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            var config = new NetPeerConfiguration(AppIdentifier)
+            {
+                ConnectionTimeout = 15f,
+                PingInterval = 4f,
+                MaximumConnections = 1
+            };
+            config.EnableMessageType(NetIncomingMessageType.StatusChanged);
+            config.EnableMessageType(NetIncomingMessageType.Data);
+            var peer = new NetPeer(config);
+            peer.Start();
+            NetConnection connection = peer.Connect("127.0.0.1", targetPort);
+            var connectedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            string lastStatus = null;
+            _ = WatchStatusAsync(peer, connectedTcs, status =>
+            {
+                lastStatus = status;
+                Console.WriteLine($"[connect] {name} status={status}");
+            });
+            await Task.WhenAny(connectedTcs.Task, Task.Delay(8000));
+
+            if (connection.Status != NetConnectionStatus.Connected)
+            {
+                lastFailure = $"attempt {attempt}: never connected (status={connection.Status}, last={lastStatus ?? "none"})";
+                Console.WriteLine("[connect] " + lastFailure);
+                await ClosePeerAsync(peer, connection);
+                await Task.Delay(250 * attempt);
+                continue;
+            }
+
+            var transport = new PeerTransport(peer, connection);
+            var handshake = new SecureHandshakeClient(transport);
+            SecureHandshakeResult result = await handshake.RunAsync(name, authToken ?? "", "0.1.0", registrationPassword, CancellationToken.None, null, createAccount);
+            if (!result.Accepted && transport.PumpError != null)
+                result.RejectReason = (result.RejectReason ?? "rejected") + " [" + transport.PumpError + "]";
+            return (peer, connection, transport, result);
+        }
+
+        throw new InvalidOperationException("Transport connection failed: " + lastFailure);
     }
 
     public static async Task ExpectHandshakeRejectionAsync(string name, string authToken, string expectedFragment, bool createAccount = false, string expectedCode = null, int port = 0, string registrationPassword = null)
@@ -315,7 +379,7 @@ sealed class TestPeer : IDisposable
         }
     }
 
-    private static async Task WatchStatusAsync(NetPeer peer, TaskCompletionSource<bool> connected)
+    private static async Task WatchStatusAsync(NetPeer peer, TaskCompletionSource<bool> connected, Action<string> report)
     {
         while (!connected.Task.IsCompleted)
         {
@@ -330,6 +394,8 @@ sealed class TestPeer : IDisposable
                 if (message.MessageType == NetIncomingMessageType.StatusChanged)
                 {
                     var status = (NetConnectionStatus)message.ReadByte();
+                    string reason = message.LengthBytes > 1 ? message.ReadString() : null;
+                    report?.Invoke(status + (reason == null ? string.Empty : " (" + reason + ")"));
                     if (status == NetConnectionStatus.Connected) connected.TrySetResult(true);
                     if (status == NetConnectionStatus.Disconnected) connected.TrySetResult(false);
                 }
@@ -367,6 +433,11 @@ sealed class TestPeer : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
+        if (_dropped)
+        {
+            try { _peer.Shutdown("integration complete"); } catch { }
+            return;
+        }
         try { _connection.Disconnect("integration complete"); } catch { }
         try { _peer.Shutdown("integration complete"); } catch { }
         _cts.Dispose();
@@ -519,6 +590,18 @@ static class Program
         if (chat.Message != "integration chat" || chat.FromPlayerName != aliceName || chatOwner.Message != "integration chat")
             throw new InvalidOperationException("Chat payload mismatch.");
 
+        await alice.SendAsync(PacketType.ChatMessage, new ChatMessagePacket { WorldId = worldId, Message = "<b>markup</b>" });
+        await ExpectErrorCodeAsync(alice, "cannot contain", "chat_rejected");
+
+        await bob.SendAsync(PacketType.ChatMessage, new ChatMessagePacket { WorldId = worldId, Message = "  spacing\u200B\ncheck\ttwo  " });
+        ChatMessagePacket cleanedChat = await alice.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+        ChatMessagePacket cleanedOwner = await bob.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+        if (cleanedChat.Message != "spacing check two" || cleanedOwner.Message != "spacing check two")
+            throw new InvalidOperationException($"Chat text was not filtered server-side: '{cleanedChat.Message}'.");
+        if (cleanedChat.FromPlayerName != bobName)
+            throw new InvalidOperationException("Chat filter changed the sender identity.");
+        Console.WriteLine("[assert] chat text is filtered and validated server-side");
+
         await alice.SendAsync(PacketType.TimeWarpRequest, new TimeWarpRequestPacket { WorldId = worldId, RequestedMultiplier = 4 });
         TimeWarpVotePacket voteAlice = await alice.ReceiveTypeAsync<TimeWarpVotePacket>(PacketType.TimeWarpVote);
         TimeWarpVotePacket voteBob = await bob.ReceiveTypeAsync<TimeWarpVotePacket>(PacketType.TimeWarpVote);
@@ -574,7 +657,9 @@ static class Program
         WorldSummary listed = afterLeave.Worlds.FirstOrDefault(x => x.WorldId == worldId);
         if (listed == null || listed.PlayersOnline != 1) throw new InvalidOperationException("World leave did not update player count.");
 
+        await VerifyConnectionLifecycleAsync(suffix);
         await VerifyDataPlaneAsync(suffix);
+        await VerifyRoomsAsync(suffix);
 
         VerifyNoOrphanedTake();
         VerifyChatWindow();
@@ -727,6 +812,23 @@ static class Program
         Console.WriteLine("[assert] staged storage never promotes a dropped write");
     }
 
+    private static async Task VerifyConnectionLifecycleAsync(string suffix)
+    {
+        for (int index = 0; index < 50; index++)
+        {
+            await TestPeer.ExpectHandshakeRejectionAsync("Ghost_" + suffix + "_" + index, null, null, createAccount: false, expectedCode: AuthErrorCode.UnknownAccount);
+            using TestPeer registered = await TestPeer.ConnectAsync("Life_" + suffix + "_" + index, null, createAccount: true);
+            if (string.IsNullOrEmpty(registered.IssuedToken))
+                throw new InvalidOperationException($"Lifecycle registration {index} did not issue a token.");
+            await SyncAsync(registered);
+            if (index % 10 == 0) registered.DropAbruptly();
+        }
+
+        using TestPeer survivor = await TestPeer.ConnectAsync("Survivor_" + suffix, null, createAccount: true);
+        await SyncAsync(survivor);
+        Console.WriteLine("[assert] peer lifecycle survives 100 alternating handshakes and abrupt drops");
+    }
+
     private static async Task VerifyDataPlaneAsync(string suffix)
     {
         using TestPeer owner = await TestPeer.ConnectAsync("DpOwner_" + suffix, null, createAccount: true);
@@ -873,6 +975,35 @@ static class Program
         if (released == null) throw new InvalidOperationException("The spawned build disappeared from the world.");
         if (!string.IsNullOrEmpty(released.ControllingPlayerId))
             throw new InvalidOperationException("Leaving the world did not release build control.");
+        await owner.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+
+        await stranger.SendAsync(PacketType.WorldJoin, new WorldJoinPacket { WorldId = publicWorld.WorldId });
+        WorldJoinAckPacket strangerInPublic = await stranger.ReceiveTypeAsync<WorldJoinAckPacket>(PacketType.WorldJoinAck);
+        if (!strangerInPublic.Accepted) throw new InvalidOperationException("The stranger could not join the public world: " + strangerInPublic.RejectReason);
+        await stranger.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+        await owner.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+
+        await stranger.SendAsync(PacketType.ClaimCreate, new ClaimCreatePacket { WorldId = publicWorld.WorldId, Shape = ClaimShape.Region, CenterX = 30, CenterY = 20, RadiusMeters = 25 });
+        await ExpectErrorCodeAsync(stranger, "overlaps a region claimed by", "claim_rejected");
+
+        await stranger.SendAsync(PacketType.ClaimCreate, new ClaimCreatePacket { WorldId = publicWorld.WorldId, Shape = ClaimShape.Region, CenterX = 400, CenterY = 400, RadiusMeters = 10 });
+        ClaimInfo farClaim = await stranger.ReceiveTypeAsync<ClaimInfo>(PacketType.ClaimCreate);
+        ClaimInfo farClaimOwner = await owner.ReceiveTypeAsync<ClaimInfo>(PacketType.ClaimCreate);
+        if (farClaim.ClaimId != farClaimOwner.ClaimId) throw new InvalidOperationException("A non-overlapping region claim was not broadcast consistently.");
+
+        await owner.SendAsync(PacketType.BuildSpawn, new BuildSnapshot { BuildId = "far-build-" + suffix, DisplayName = "Far", PosX = 500, PosY = 500, PlanetAddress = "Earth" });
+        BuildSnapshot farBuild = await stranger.ReceiveTypeAsync<BuildSnapshot>(PacketType.BuildSpawn);
+        if (farBuild.BuildId != "far-build-" + suffix) throw new InvalidOperationException("The far build did not reach the other player.");
+
+        await stranger.SendAsync(PacketType.ClaimCreate, new ClaimCreatePacket { WorldId = publicWorld.WorldId, Shape = ClaimShape.Region, CenterX = 500, CenterY = 500, RadiusMeters = 10 });
+        await ExpectErrorCodeAsync(stranger, "contains a build owned by", "claim_rejected");
+
+        await owner.SendAsync(PacketType.ClaimCreate, new ClaimCreatePacket { WorldId = publicWorld.WorldId, Shape = ClaimShape.Region, CenterX = 10, CenterY = 20, RadiusMeters = 25 });
+        ClaimInfo repeated = await owner.ReceiveTypeAsync<ClaimInfo>(PacketType.ClaimCreate);
+        ClaimInfo repeatedSeenByOther = await stranger.ReceiveTypeAsync<ClaimInfo>(PacketType.ClaimCreate);
+        if (repeated.ClaimId != regionClaim.ClaimId || repeatedSeenByOther.ClaimId != regionClaim.ClaimId)
+            throw new InvalidOperationException("Re-claiming the same region created a duplicate claim instead of returning the existing one.");
+        Console.WriteLine("[assert] region claims cannot overlap another player's region or build");
 
         if (TestSettings.PasswordPort > 0)
         {
@@ -886,7 +1017,7 @@ static class Program
 
             await Task.Delay(3200);
             await SendUploadAsync(uploadA, "cap-a-" + suffix, 2, 1, "QUJD");
-            await ExpectErrorAsync(uploadA, "in order");
+            await ExpectErrorCodeAsync(uploadA, "expired", "upload_expired");
 
             var fresh = new WorldRecord { Name = "Fresh " + suffix };
             await SendUploadJsonAsync(uploadB, "cap-c-" + suffix, fresh);
@@ -895,6 +1026,153 @@ static class Program
         }
 
         Console.WriteLine("[assert] world data plane enforces access, upload bounds and controller release");
+    }
+
+    private static async Task VerifyRoomsAsync(string suffix)
+    {
+        using TestPeer host = await TestPeer.ConnectAsync("RoomHost_" + suffix, null, createAccount: true);
+        using TestPeer guest = await TestPeer.ConnectAsync("RoomGuest_" + suffix, null, createAccount: true);
+        using TestPeer other = await TestPeer.ConnectAsync("RoomOther_" + suffix, null, createAccount: true);
+
+        await host.SendAsync(PacketType.RoomCreate, new RoomCreatePacket { Name = "Tiny " + suffix, Visibility = RoomVisibility.Public, Capacity = 1 });
+        RoomStatePacket tiny = await host.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (tiny.Accepted || (tiny.Reason ?? string.Empty).IndexOf("capacity", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new InvalidOperationException("A one-player room was not refused with a capacity reason.");
+
+        await host.SendAsync(PacketType.RoomCreate, new RoomCreatePacket { Name = "Room " + suffix, Description = "Integration room.", Visibility = RoomVisibility.Public, Capacity = 2 });
+        RoomStatePacket opened = await host.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (!opened.Accepted || opened.Room == null || opened.World == null || !opened.World.Accepted)
+            throw new InvalidOperationException("A public room was not opened: " + opened.Reason);
+        if (opened.Room.PlayersOnline != 1 || opened.Room.Capacity != 2 || opened.Room.Visibility != RoomVisibility.Public || opened.Room.Description != "Integration room.")
+            throw new InvalidOperationException("The opened room summary was wrong.");
+        string roomId = opened.Room.RoomId;
+        string worldId = opened.Room.WorldId;
+        if (string.IsNullOrEmpty(worldId)) throw new InvalidOperationException("A room was opened without a world.");
+
+        await host.SendAsync(PacketType.RoomCreate, new RoomCreatePacket { Name = "Second " + suffix, Visibility = RoomVisibility.Public, Capacity = 4, WorldId = worldId });
+        RoomStatePacket duplicateWorld = await host.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (duplicateWorld.Accepted || (duplicateWorld.Reason ?? string.Empty).IndexOf("already hosted", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new InvalidOperationException("A world hosted by one room was accepted by a second room.");
+
+        await guest.SendAsync(PacketType.RoomListRequest, new { });
+        RoomListResponsePacket listed = await guest.ReceiveTypeAsync<RoomListResponsePacket>(PacketType.RoomListResponse);
+        RoomSummary row = listed.Rooms.FirstOrDefault(r => r.RoomId == roomId);
+        if (row == null || row.PlayersOnline != 1 || row.HostPlayerName != "RoomHost_" + suffix)
+            throw new InvalidOperationException("A public room was not listed with its live population.");
+
+        await guest.SendAsync(PacketType.RoomJoin, new RoomJoinPacket { RoomId = roomId });
+        RoomStatePacket joined = await guest.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (!joined.Accepted || joined.Room == null || joined.Room.PlayersOnline != 2 || joined.World == null || joined.World.WorldId != worldId)
+            throw new InvalidOperationException("A guest could not join the room: " + joined.Reason);
+        await guest.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+        await host.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+
+        await other.SendAsync(PacketType.RoomJoin, new RoomJoinPacket { RoomId = roomId });
+        RoomStatePacket full = await other.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (full.Accepted || (full.Reason ?? string.Empty).IndexOf("full", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new InvalidOperationException("The room capacity was not enforced.");
+
+        await guest.SendAsync(PacketType.RoomClose, new RoomClosePacket { RoomId = roomId });
+        RoomStatePacket closeDenied = await guest.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (closeDenied.Accepted || (closeDenied.Reason ?? string.Empty).IndexOf("host", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new InvalidOperationException("A guest was allowed to close someone else's room.");
+
+        await guest.SendAsync(PacketType.RoomLeave, new { });
+        RoomStatePacket guestLeft = await guest.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (!guestLeft.Accepted || guestLeft.Room != null) throw new InvalidOperationException("Leaving the room did not clear it.");
+
+        await other.SendAsync(PacketType.RoomJoin, new RoomJoinPacket { RoomId = roomId });
+        RoomStatePacket otherJoined = await other.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (!otherJoined.Accepted) throw new InvalidOperationException("The freed room slot could not be used: " + otherJoined.Reason);
+        await other.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+        await host.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+
+        await host.SendAsync(PacketType.RoomClose, new RoomClosePacket { RoomId = roomId });
+        RoomClosedPacket hostClosed = await host.ReceiveTypeAsync<RoomClosedPacket>(PacketType.RoomClosed);
+        RoomClosedPacket otherClosed = await other.ReceiveTypeAsync<RoomClosedPacket>(PacketType.RoomClosed);
+        if (hostClosed.RoomId != roomId || otherClosed.RoomId != roomId)
+            throw new InvalidOperationException("Room closure was not delivered to every member.");
+
+        await host.SendAsync(PacketType.RoomListRequest, new { });
+        RoomListResponsePacket afterClose = await host.ReceiveTypeAsync<RoomListResponsePacket>(PacketType.RoomListResponse);
+        if (afterClose.Rooms.Any(r => r.RoomId == roomId)) throw new InvalidOperationException("A closed room was still listed.");
+
+        await host.SendAsync(PacketType.RoomCreate, new RoomCreatePacket { Name = "Friends " + suffix, Visibility = RoomVisibility.Friends, Capacity = 4 });
+        RoomStatePacket friendsRoom = await host.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (!friendsRoom.Accepted) throw new InvalidOperationException("A friends-only room was not opened: " + friendsRoom.Reason);
+        string friendsRoomId = friendsRoom.Room.RoomId;
+
+        await other.SendAsync(PacketType.RoomJoin, new RoomJoinPacket { RoomId = friendsRoomId });
+        RoomStatePacket refused = await other.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (refused.Accepted || (refused.Reason ?? string.Empty).IndexOf("friends-only", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new InvalidOperationException("A stranger joined a friends-only room.");
+
+        await host.SendAsync(PacketType.FriendRequest, new FriendRequestPacket { TargetPlayerName = "RoomGuest_" + suffix });
+        await guest.ReceiveTypeAsync<FriendListResponsePacket>(PacketType.FriendListResponse);
+        await host.ReceiveTypeAsync<FriendListResponsePacket>(PacketType.FriendListResponse);
+        await guest.SendAsync(PacketType.FriendRequestResponse, new FriendRequestResponsePacket { FromPlayerId = host.PlayerId, Accepted = true });
+        await guest.ReceiveTypeAsync<FriendListResponsePacket>(PacketType.FriendListResponse);
+        await host.ReceiveTypeAsync<FriendListResponsePacket>(PacketType.FriendListResponse);
+
+        await guest.SendAsync(PacketType.RoomListRequest, new { });
+        RoomListResponsePacket friendListing = await guest.ReceiveTypeAsync<RoomListResponsePacket>(PacketType.RoomListResponse);
+        if (!friendListing.Rooms.Any(r => r.RoomId == friendsRoomId))
+            throw new InvalidOperationException("A friends-only room was not listed to the host's friend.");
+
+        await other.SendAsync(PacketType.WorldJoin, new WorldJoinPacket { WorldId = friendsRoom.Room.WorldId });
+        RoomStatePacket worldRouteRefused = await other.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (worldRouteRefused.Accepted || (worldRouteRefused.Reason ?? string.Empty).IndexOf("friends-only", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new InvalidOperationException("Joining a room-hosted world directly bypassed the room's visibility rule.");
+
+        await guest.SendAsync(PacketType.WorldJoin, new WorldJoinPacket { WorldId = friendsRoom.Room.WorldId });
+        RoomStatePacket friendJoined = await guest.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (!friendJoined.Accepted || friendJoined.Room == null || friendJoined.Room.RoomId != friendsRoomId)
+            throw new InvalidOperationException("A friend joining the hosted world was not routed into the room: " + friendJoined.Reason);
+        await guest.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+        await host.ReceiveTypeAsync<ChatMessagePacket>(PacketType.ChatMessage);
+
+        await guest.SendAsync(PacketType.RoomLeave, new { });
+        await guest.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        await host.SendAsync(PacketType.RoomClose, new RoomClosePacket { RoomId = friendsRoomId });
+        await host.ReceiveTypeAsync<RoomClosedPacket>(PacketType.RoomClosed);
+
+        await host.SendAsync(PacketType.RoomCreate, new RoomCreatePacket { Name = "Empty " + suffix, Visibility = RoomVisibility.Public, Capacity = 4 });
+        RoomStatePacket emptyRoom = await host.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (!emptyRoom.Accepted) throw new InvalidOperationException("Could not open the room used to test auto-close: " + emptyRoom.Reason);
+        await host.SendAsync(PacketType.RoomLeave, new { });
+        await host.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        await host.SendAsync(PacketType.RoomListRequest, new { });
+        RoomListResponsePacket afterEmpty = await host.ReceiveTypeAsync<RoomListResponsePacket>(PacketType.RoomListResponse);
+        if (afterEmpty.Rooms.Any(r => r.RoomId == emptyRoom.Room.RoomId))
+            throw new InvalidOperationException("A room that became empty stayed listed.");
+
+        await host.SendAsync(PacketType.WorldCreate, new WorldCreatePacket { Name = "Private Hosted " + suffix, IsPublic = false });
+        WorldJoinAckPacket privateHosted = await host.ReceiveTypeAsync<WorldJoinAckPacket>(PacketType.WorldJoinAck);
+        if (!privateHosted.Accepted) throw new InvalidOperationException("Could not create the world used for the visibility check.");
+        await host.SendAsync(PacketType.RoomCreate, new RoomCreatePacket { Name = "Public Over Private " + suffix, Visibility = RoomVisibility.Public, Capacity = 4, WorldId = privateHosted.WorldId });
+        RoomStatePacket publicOverPrivate = await host.ReceiveTypeAsync<RoomStatePacket>(PacketType.RoomState);
+        if (publicOverPrivate.Accepted || (publicOverPrivate.Reason ?? string.Empty).IndexOf("public world", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new InvalidOperationException("A public room was opened over a private world, which makes the room and world policies disagree.");
+
+        Console.WriteLine("[assert] rooms are server-enforced: capacity, visibility, host close and auto-close");
+    }
+
+    private static async Task ExpectErrorCodeAsync(TestPeer peer, string fragment, string code)
+    {
+        for (int attempt = 0; attempt < 64; attempt++)
+        {
+            (PacketType type, string json) = await peer.ReceiveAsync();
+            if (type == PacketType.WorldTimeState || type == PacketType.ChatMessage) continue;
+            if (type != PacketType.Error) throw new InvalidOperationException($"Expected error code '{code}' but got {type}: {json}");
+            var error = JsonConvert.DeserializeObject<ErrorPacket>(json);
+            string message = error?.Message ?? string.Empty;
+            if (message.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) < 0)
+                throw new InvalidOperationException($"Expected an error containing '{fragment}' but got '{message}'.");
+            if (!string.Equals(error?.Code, code, StringComparison.Ordinal))
+                throw new InvalidOperationException($"Expected error code '{code}' but got '{error?.Code ?? "none"}' for '{message}'.");
+            return;
+        }
+        throw new TimeoutException($"Did not receive error code '{code}'.");
     }
 
     private static async Task ExpectUploadSucceedsAsync(TestPeer peer, string uploadId, string name)
@@ -1199,10 +1477,11 @@ static class Program
 
     private static async Task VerifyIdentityGateBlocksProofAsync()
     {
-        P256.PublicPoint(P256.GeneratePrivateKey(), out byte[] sx, out byte[] sy);
+        byte[] serverPrivate = P256.GeneratePrivateKey();
+        P256.PublicPoint(serverPrivate, out byte[] sx, out byte[] sy);
         ServerIdentity identity = ServerIdentityCalculator.FromStaticPoint(sx, sy);
 
-        var firstUseTransport = new ScriptedHandshakeTransport(sx, sy);
+        var firstUseTransport = new ScriptedHandshakeTransport(serverPrivate);
         var firstUse = await new SecureHandshakeClient(firstUseTransport)
             .RunAsync("Pilot", string.Empty, "0.1.0", null, CancellationToken.None, new StubIdentityGate("example.com:7777", ServerIdentityDecision.FirstUse));
         if (firstUse.Accepted) throw new InvalidOperationException("An untrusted identity completed the handshake.");
@@ -1213,7 +1492,7 @@ static class Program
         if (firstUseTransport.ProofSent)
             throw new InvalidOperationException("The client sent an auth proof to a server whose identity was not trusted.");
 
-        var changedTransport = new ScriptedHandshakeTransport(sx, sy);
+        var changedTransport = new ScriptedHandshakeTransport(serverPrivate);
         var changed = await new SecureHandshakeClient(changedTransport)
             .RunAsync("Pilot", string.Empty, "0.1.0", null, CancellationToken.None, new StubIdentityGate("example.com:7777", ServerIdentityDecision.Changed));
         if (changed.Accepted || changed.IdentityDecision != ServerIdentityDecision.Changed)
@@ -1221,13 +1500,33 @@ static class Program
         if (changedTransport.ProofSent)
             throw new InvalidOperationException("The client sent an auth proof to a server with a changed identity.");
 
-        var trustedTransport = new ScriptedHandshakeTransport(sx, sy);
-        await new SecureHandshakeClient(trustedTransport)
+        var trustedTransport = new ScriptedHandshakeTransport(serverPrivate);
+        SecureHandshakeResult trusted = await new SecureHandshakeClient(trustedTransport)
             .RunAsync("Pilot", string.Empty, "0.1.0", null, CancellationToken.None, new StubIdentityGate("example.com:7777", ServerIdentityDecision.Trusted));
+        if (!trusted.Accepted || !trusted.IdentityProofVerified)
+            throw new InvalidOperationException("A trusted server that proved its identity was not accepted: " + (trusted.RejectReason ?? "no reason"));
+        if (!trustedTransport.IdentityProofSent)
+            throw new InvalidOperationException("The scripted server never sent an identity proof.");
         if (!trustedTransport.ProofSent)
             throw new InvalidOperationException("A trusted server did not receive the auth proof.");
 
-        Console.WriteLine("[assert] identity is decided before the auth proof is sent");
+        var silentTransport = new ScriptedHandshakeTransport(serverPrivate, ScriptedProofMode.Omit);
+        SecureHandshakeResult silent = await new SecureHandshakeClient(silentTransport)
+            .RunAsync("Pilot", string.Empty, "0.1.0", null, CancellationToken.None, new StubIdentityGate("example.com:7777", ServerIdentityDecision.Trusted));
+        if (silent.Accepted || silent.ErrorCode != AuthErrorCode.IdentityProofMissing)
+            throw new InvalidOperationException($"A server that never proved its identity key was not refused with {AuthErrorCode.IdentityProofMissing} (got {silent.ErrorCode ?? "acceptance"}).");
+        if (silentTransport.ProofSent)
+            throw new InvalidOperationException("The client sent a token proof to a server that never proved its identity key.");
+
+        var forgedTransport = new ScriptedHandshakeTransport(serverPrivate, ScriptedProofMode.WrongMac);
+        SecureHandshakeResult forged = await new SecureHandshakeClient(forgedTransport)
+            .RunAsync("Pilot", string.Empty, "0.1.0", null, CancellationToken.None, new StubIdentityGate("example.com:7777", ServerIdentityDecision.Trusted));
+        if (forged.Accepted || forged.ErrorCode != AuthErrorCode.IdentityProofInvalid)
+            throw new InvalidOperationException($"A server with a forged identity proof was not refused with {AuthErrorCode.IdentityProofInvalid} (got {forged.ErrorCode ?? "acceptance"}).");
+        if (forgedTransport.ProofSent)
+            throw new InvalidOperationException("The client sent a token proof to a server that failed the identity proof.");
+
+        Console.WriteLine("[assert] identity is decided and proven before the auth proof is sent");
     }
 
     private static async Task VerifyAccountNameCanonicalizationAsync(string name, string token, string playerId)
@@ -1304,20 +1603,36 @@ sealed class StubIdentityGate : IServerIdentityGate
     }
 }
 
+enum ScriptedProofMode
+{
+    Correct,
+    Omit,
+    WrongMac
+}
+
 sealed class ScriptedHandshakeTransport : ISecureTransport
 {
     private readonly BlockingCollection<RawFrame> _frames = new();
+    private readonly byte[] _staticPrivate;
     private readonly byte[] _staticX;
     private readonly byte[] _staticY;
+    private readonly ScriptedProofMode _mode;
     private byte[] _exchangeIdentifier;
+    private byte[] _serverChallenge;
+    private byte[] _clientNonce;
+    private string _playerName;
+    private bool _keyExchangeSent;
+    private SecureChannel _serverChannel;
+    private byte[] _sessionId;
 
     public bool ProofSent;
-    public bool AuthResponseWithKeySent;
+    public bool IdentityProofSent;
 
-    public ScriptedHandshakeTransport(byte[] staticX, byte[] staticY)
+    public ScriptedHandshakeTransport(byte[] staticPrivate, ScriptedProofMode mode = ScriptedProofMode.Correct)
     {
-        _staticX = staticX;
-        _staticY = staticY;
+        _staticPrivate = staticPrivate;
+        _mode = mode;
+        P256.PublicPoint(staticPrivate, out _staticX, out _staticY);
     }
 
     public Task SendPlainAsync(PacketType type, object payload, CancellationToken ct)
@@ -1325,11 +1640,14 @@ sealed class ScriptedHandshakeTransport : ISecureTransport
         if (type == PacketType.Hello)
         {
             var hello = (HelloPacket)payload;
+            _clientNonce = hello.ClientNonce;
+            _playerName = hello.PlayerName;
+            _serverChallenge = SessionAuth.RandomBytes(SessionAuth.ChallengeBytes);
             _exchangeIdentifier = SessionAuth.RandomBytes(SessionAuth.SessionIdBytes);
             Enqueue(PacketType.HelloAck, new HelloAckPacket
             {
                 Accepted = true,
-                ServerChallenge = SessionAuth.RandomBytes(SessionAuth.ChallengeBytes),
+                ServerChallenge = _serverChallenge,
                 ClientNonce = hello.ClientNonce,
                 ExchangeIdentifier = _exchangeIdentifier
             });
@@ -1340,21 +1658,46 @@ sealed class ScriptedHandshakeTransport : ISecureTransport
             if (response.Proof != null || response.RegistrationSecret != null)
             {
                 ProofSent = true;
+                if (_serverChannel != null)
+                {
+                    EnqueueSealed(_serverChannel, PacketType.AuthResult, new AuthResultPacket
+                    {
+                        Accepted = true,
+                        PlayerId = "scripted-player",
+                        SessionId = _sessionId
+                    });
+                }
             }
-            else if (!AuthResponseWithKeySent)
+            else if (!_keyExchangeSent)
             {
-                AuthResponseWithKeySent = true;
-                P256.PublicPoint(P256.GeneratePrivateKey(), out byte[] ephemeralX, out byte[] ephemeralY);
+                _keyExchangeSent = true;
+                byte[] serverEphemeralPrivate = P256.GeneratePrivateKey();
+                P256.PublicPoint(serverEphemeralPrivate, out byte[] serverX, out byte[] serverY);
                 Enqueue(PacketType.AuthChallenge, new AuthChallengePacket
                 {
-                    EphemeralX = ephemeralX,
-                    EphemeralY = ephemeralY,
+                    EphemeralX = serverX,
+                    EphemeralY = serverY,
                     StaticX = _staticX,
                     StaticY = _staticY,
                     IdentityFingerprint = "untrusted-server-supplied-value",
                     ExchangeIdentifier = _exchangeIdentifier,
                     FinalFlag = true
                 });
+
+                byte[] ephemeralSecret = P256.DeriveSharedSecret(serverEphemeralPrivate, response.EphemeralX, response.EphemeralY);
+                byte[] staticSecret = P256.DeriveSharedSecret(_staticPrivate, response.EphemeralX, response.EphemeralY);
+                byte[] transcript = SessionAuth.ComputeTranscriptHash(_clientNonce, _serverChallenge, response.EphemeralX, response.EphemeralY, serverX, serverY, _staticX, _staticY, _playerName);
+                byte[] preMaster = SessionAuth.ComputePreMaster(ephemeralSecret, staticSecret, transcript, _exchangeIdentifier, _clientNonce);
+                _sessionId = SessionAuth.DeriveSessionId(preMaster);
+                SecureChannel channel = SecureChannel.FromPreMaster(preMaster, _sessionId, isServer: true);
+                _serverChannel = channel;
+                if (_mode != ScriptedProofMode.Omit)
+                {
+                    byte[] mac = SessionAuth.ComputeIdentityProof(staticSecret, transcript);
+                    if (_mode == ScriptedProofMode.WrongMac) mac[0] ^= 0xFF;
+                    EnqueueSealed(channel, PacketType.IdentityProof, new IdentityProofPacket { Mac = mac });
+                    IdentityProofSent = true;
+                }
             }
         }
         return Task.CompletedTask;
@@ -1370,4 +1713,7 @@ sealed class ScriptedHandshakeTransport : ISecureTransport
 
     private void Enqueue(PacketType type, object payload) =>
         _frames.Add(new RawFrame { IsSealed = false, Data = LidgrenWire.Encode(type, payload) });
+
+    private void EnqueueSealed(SecureChannel channel, PacketType type, object payload) =>
+        _frames.Add(new RawFrame { IsSealed = true, Data = channel.Seal(type, payload) });
 }

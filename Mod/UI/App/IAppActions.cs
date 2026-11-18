@@ -23,9 +23,12 @@ namespace SFSEnhanced.Mod.UI.App
         void ForgetTrustedServer(string endpointKey);
 
         void RefreshServers();
-        void RefreshWorlds();
-        void CreateWorld(string name, bool isPublic);
+        void RefreshRooms();
+        void CreateRoom(string name, string description, bool isPublic, string capacityText);
+        void JoinRoom(string roomId, string roomName);
         void JoinWorld(string worldId, string worldName);
+        void LeaveRoom();
+        void CloseRoom();
         void LeaveWorld();
 
         void SendChat(string message);

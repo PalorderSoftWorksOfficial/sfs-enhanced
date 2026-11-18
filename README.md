@@ -13,8 +13,10 @@ The project is designed around the native SFS modding APIs and a clean separatio
 - Encrypted UDP transport with a sealed application-layer channel (no TLS)
 - Persistent server-issued player authentication tokens, scoped per server endpoint
 - Server identity fingerprint pinning per endpoint, with explicit first-connection trust
-- Public server directory and server browser
-- Persistent shared worlds
+- Server-proved identity (`IdentityProof`) before any credential proof is sent
+- Public server directory and server browser with distinct load-error states
+- First-class rooms: visibility, capacity, host-only close, auto-close when empty
+- Persistent shared worlds (the save layer a room hosts)
 - Multiple independently synchronized builds per world
 - Build ownership and region/build claims
 - Friends, requests, invitations, and world presence
@@ -33,11 +35,12 @@ The project is designed around the native SFS modding APIs and a clean separatio
 | Transport | Lidgren UDP with a sealed application-layer channel |
 | Server identity pinning | Implemented, first connection requires explicit trust |
 | Persistent authentication | Implemented, explicit sign-in vs account creation |
+| Rooms | Implemented: server-enforced visibility, capacity, host close, auto-close |
 | Shared worlds | Implemented with authoritative world clock |
 | Multi-build synchronization | Live state replication and interpolation |
 | Friends and invites | Implemented foundation |
-| Claims | Implemented foundation |
-| Chat | Implemented foundation |
+| Claims | Implemented foundation, including region overlap policy |
+| Chat | Implemented, with server-side text filtering |
 | Creator systems | In development |
 | Advanced SFS QoL systems | In development |
 | Full feature parity with referenced mods | Roadmap |
@@ -46,7 +49,9 @@ The project is designed around the native SFS modding APIs and a clean separatio
 
 The multiplayer entry belongs to the Play flow rather than floating independently over the home screen. The multiplayer window is opened through SFS's screen system, so the underlying Play menu is no longer left active behind a second unrelated window.
 
-Secondary multiplayer pages are treated as pages of the same flow. Server browsing, world browsing, friends, chat, and world tools are designed to replace the front page rather than stack small windows on top of it.
+Secondary multiplayer pages are treated as pages of the same flow. Server browsing, rooms, friends, chat, profiles and settings replace the front page rather than stacking small windows on top of it.
+
+A room is a live session on one server that hosts exactly one world save. The server enforces its visibility (public, or host plus accepted friends), capacity, one room per world, and host-only close; a room that becomes empty closes immediately. The world outlives the room, but room listings do not survive a server restart yet. `DESIGN_SYSTEM.md` and `UX_FLOWS.md` document the screen states and interaction paths.
 
 The connection form accepts a normal hostname. A port override is optional. Without one, SFS Enhanced first attempts `_sfs._tcp.<hostname>` SRV discovery and falls back to the default multiplayer port.
 
@@ -54,13 +59,15 @@ The connection form accepts a normal hostname. A port override is optional. With
 
 Multiplayer traffic is not plaintext. There is **no TLS**: the transport is Lidgren UDP, and the protocol runs its own sealed channel on top of it. Each connection performs a P-256 ephemeral and static ECDH handshake, derives a per-session pre-master, and seals every packet with AES-CTR plus an HMAC tag and a replay window.
 
-Player authentication uses persistent opaque server-issued tokens. The server stores only `SHA-256(token)`. The raw token never crosses the wire: the client sends an HMAC proof over the handshake transcript, and the token is stored locally per server endpoint.
+Player authentication uses persistent opaque server-issued tokens. The server stores only `SHA-256(token)`; the token is stored locally per server endpoint. The wire protocol is version **3.0**.
+
+Credential proofs are only sent after the server proves it holds its identity key. After the key exchange, the server sends a sealed `IdentityProof` — an HMAC keyed from the static-key shared secret and bound to the transcript — and only then does the client send its token MAC. A server that omits or forges that proof receives nothing, with `identity_proof_missing` or `identity_proof_invalid`. Protocol 2.x peers are refused with `protocol_version` rather than silently downgraded.
 
 Signing in and creating an account are separate actions. A token login only authenticates an account that already exists on that server; a name the server has never seen is refused with an explicit "no account here" result and creates nothing. Accounts are created only by the explicit *Create account* action, which the server accepts only when registration is open and, if configured, the registration password check succeeds. The client never switches silently from signing in to registering.
 
 Registration passwords are never sent in the clear. When a server requires one, it asks for the password proof inside the sealed channel, after the client has validated the server's pinned identity key; an untrusted or impersonating endpoint cannot read it. The password hash is salted per server instance (`data/system/registration_salt.json`). This removes passive capture and cross-server precomputation, but it is not a PAKE: any server that verifies a password can still test guesses offline, so registration passwords are not claimed to be attacker-proof.
 
-The server holds a long-lived P-256 identity key in `data/system/server_static_key.json` and prints its fingerprint at startup. The client recomputes that fingerprint from the static public key it received, and pins it per endpoint (`host:port`, or `host` when the port comes from SRV). Before a server is trusted on a device, the client sends nothing beyond its ephemeral public key: no token proof, no registration secret, and no account is created. Pinning is **not** a substitute for authentication on first contact. Trust-on-first-use cannot detect an on-path attacker who is present the first time you connect; only comparing the fingerprint out of band (the server console prints it) does. A pinned endpoint can never change identity silently: a mismatch is refused, and replacing the pin is a separate, deliberate action.
+The server holds a long-lived P-256 identity key in `data/system/server_static_key.json` and prints its fingerprint at startup. The client recomputes that fingerprint from the static public key it received, and pins it per endpoint (`host:port`, or `host` when the port comes from SRV). Before a server is trusted on a device, the client sends nothing beyond its ephemeral public key: no token proof, no registration secret, and no account is created. Pinning is **not** a substitute for authentication on first contact. Registration passwords are not a PAKE: a server that verifies one can still test guesses offline. Trust-on-first-use cannot detect an on-path attacker who is present the first time you connect; only comparing the fingerprint out of band (the server console prints it) does. A pinned endpoint can never change identity silently: a mismatch is refused, and replacing the pin is a separate, deliberate action.
 
 Public directory listings do not carry a trusted fingerprint, and a listing is not proof that anyone controls the endpoint.
 
@@ -82,11 +89,12 @@ SFS Enhanced
 ├── Server
 │   ├── UDP networking with a sealed channel
 │   ├── accounts
+│   ├── rooms
 │   ├── worlds
 │   ├── builds
 │   ├── claims
 │   ├── friends
-│   └── chat
+│   └── chat with server-side text filtering
 ├── Directory
 │   └── self-hostable public server registry
 └── scripts
@@ -114,6 +122,8 @@ Self-contained publishing is available through the existing Windows and Linux pu
 A server can advertise through a self-hosted directory with `--advertise`, `--directory`, `--public-host`, and `--region`.
 
 The server generates an identity key at first launch when one does not exist and prints its fingerprint at startup and in `status`. Treat `data/system/server_static_key.json` as durable state: back it up, and never regenerate it casually, because a new key looks like a changed server identity to every client that trusted the old one.
+
+Console commands: `list` (players), `worlds`, `rooms`, `status` (players, rooms, pending/expired uploads, identity) and `stop`.
 
 ## Development workflow
 
@@ -169,6 +179,12 @@ sfs-enhanced/
 ├── Directory/               public server directory
 ├── scripts/                 build and integration tooling
 ├── docs/                    architecture and development notes
+├── DESIGN_SYSTEM.md         in-game UI tokens, geometry and component rules
+├── UX_FLOWS.md              screen states and interaction paths
+├── AGENT_ROLES.md           bounded role briefs, ownership and review gates
+├── IMPLEMENTATION_PLAN.md   gates and next slices
+├── QA_PLAN.md               verification protocol and unverified items
+├── BUGS.md                  verified defects only
 ├── THIRD_PARTY_NOTICES.md   third-party attribution and license notes
 └── LICENSE                  project license
 ```

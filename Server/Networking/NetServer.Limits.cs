@@ -17,6 +17,10 @@ namespace SFSEnhanced.Server.Networking
 
         private readonly ConcurrentDictionary<string, RateBucket> _rateBuckets = new();
         private readonly ConcurrentDictionary<string, string> _activeUploads = new();
+        private readonly ConcurrentDictionary<string, DateTime> _expiredUploads = new();
+
+        public int PendingUploadCount => _pendingUploads.Count;
+        public int ExpiredUploadCount => _expiredUploads.Count;
 
         private sealed class RateBucket
         {
@@ -68,9 +72,24 @@ namespace SFSEnhanced.Server.Networking
             DateTime now = DateTime.UtcNow;
             foreach (var entry in _pendingUploads.ToList())
             {
-                if ((now - entry.Value.LastActivityUtc).TotalSeconds <= idleSeconds) continue;
+                double idle = (now - entry.Value.LastActivityUtc).TotalSeconds;
+                if (idle <= idleSeconds) continue;
+                _expiredUploads[entry.Key] = now;
                 AbortUpload(entry.Value.PlayerId, entry.Value.UploadId);
+                Console.WriteLine($"[upload] expired player={entry.Value.PlayerId} upload={entry.Value.UploadId} after {idle:0.#}s idle");
             }
+
+            if (_expiredUploads.IsEmpty) return;
+            foreach (var entry in _expiredUploads.ToList())
+            {
+                if ((now - entry.Value).TotalSeconds > 300) _expiredUploads.TryRemove(entry.Key, out _);
+            }
+        }
+
+        private bool TryTakeExpiredUpload(string playerId, string uploadId)
+        {
+            if (string.IsNullOrEmpty(playerId) || string.IsNullOrEmpty(uploadId)) return false;
+            return _expiredUploads.TryRemove(playerId + ":" + uploadId, out _);
         }
 
         private void AbortUpload(string playerId, string uploadId)

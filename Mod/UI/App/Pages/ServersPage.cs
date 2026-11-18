@@ -133,9 +133,17 @@ namespace SFSEnhanced.Mod.UI.App.Pages
                     UiKit.Small(_listRegion, Theme.ContentWidth, 0, 24, "Loading public servers...", Theme.TextMuted);
                     return;
                 }
+                if (!string.IsNullOrEmpty(state.DirectoryError))
+                {
+                    UiKit.Label(_listRegion, Theme.ContentWidth, 20, 0, 32, "COULD NOT LOAD THE DIRECTORY", Theme.BodySize, Theme.Warning);
+                    UiKit.Label(_listRegion, Theme.ContentWidth, 44, 0, 4, state.DirectoryError, Theme.SmallSize, Theme.TextPrimary);
+                    UiKit.Secondary(_listRegion, 140, 32, -180, -40, "RETRY", app.RefreshServers);
+                    UiKit.Small(_listRegion, 520, 60, -40, "Direct connect above still works.", Theme.TextMuted);
+                    return;
+                }
                 if (state.Servers.Count == 0)
                 {
-                    UiKit.EmptyState(_listRegion, 24, "No public servers listed", "The directory returned nothing. Refresh, or connect directly above.");
+                    UiKit.EmptyState(_listRegion, 24, "No public servers listed", "The directory answered with an empty list. Refresh, or connect directly above.");
                     return;
                 }
 
@@ -303,7 +311,7 @@ namespace SFSEnhanced.Mod.UI.App.Pages
         private static string BuildListKey(AppState state)
         {
             var builder = new StringBuilder();
-            builder.Append(ModSettings.DirectoryUrl).Append('|').Append(state.LoadingServers).Append('|');
+            builder.Append(ModSettings.DirectoryUrl).Append('|').Append(state.LoadingServers).Append('|').Append(state.DirectoryError).Append('|');
             foreach (ServerListing server in state.Servers)
             {
                 builder.Append(server.ServerId).Append(',').Append(server.Host).Append(',')

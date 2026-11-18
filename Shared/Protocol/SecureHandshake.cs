@@ -34,6 +34,7 @@ namespace SFSEnhanced.Shared.Protocol
         public bool Accepted;
         public string RejectReason;
         public string ErrorCode;
+        public bool IdentityProofVerified;
         public string PlayerId;
         public string IssuedToken;
         public SecureChannel Channel;
@@ -92,7 +93,7 @@ namespace SFSEnhanced.Shared.Protocol
             var clientNonce = SessionAuth.RandomBytes(SessionAuth.NonceBytes);
             await _transport.SendPlainAsync(PacketType.Hello, new HelloPacket
             {
-                ProtocolVersion = HelloPacket.ProtocolVersion2,
+                ProtocolVersion = HelloPacket.ProtocolVersion3,
                 PlayerName = playerName,
                 ClientModVersion = clientModVersion,
                 ClientNonce = clientNonce,
@@ -178,6 +179,9 @@ namespace SFSEnhanced.Shared.Protocol
             byte[] sessionId = SessionAuth.DeriveSessionId(preMaster);
             var channel = SecureChannel.FromPreMaster(preMaster, sessionId, isServer: false);
 
+            SecureHandshakeResult proofFailure = await VerifyIdentityProofAsync(channel, staticSecret, transcriptHash, ct).ConfigureAwait(false);
+            if (proofFailure != null) return proofFailure;
+
             await _transport.SendPlainAsync(PacketType.AuthResponse, new AuthResponsePacket
             {
                 Proof = proof
@@ -209,6 +213,7 @@ namespace SFSEnhanced.Shared.Protocol
                     Accepted = true,
                     PlayerId = authResult.PlayerId,
                     IssuedToken = authResult.AuthToken,
+                    IdentityProofVerified = true,
                     Channel = channel,
                     Identity = identity,
                     IdentityStatus = identity.Status,
@@ -221,6 +226,36 @@ namespace SFSEnhanced.Shared.Protocol
             }
 
             return Reject("The server asked for the registration password repeatedly.", AuthErrorCode.HandshakeInvalid);
+        }
+
+        private async Task<SecureHandshakeResult> VerifyIdentityProofAsync(SecureChannel channel, byte[] staticSharedSecret, byte[] transcriptHash, CancellationToken ct)
+        {
+            (bool ok, PacketType type, string json) received;
+            try
+            {
+                received = await ReceiveAnyAsync(channel, ct).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                return Reject("The server failed to prove it holds the identity key it presented, so no credential was sent. Refusing to connect.", AuthErrorCode.IdentityProofInvalid);
+            }
+            if (!received.ok)
+                return Reject("The connection closed before the server proved its identity, so no credential was sent.", AuthErrorCode.IdentityProofMissing);
+            if (received.type == PacketType.AuthError)
+                return Reject(ExtractMessage(received.json) ?? "Authentication failed.", ExtractCode(received.json));
+            if (received.type == PacketType.Error)
+                return Reject(ExtractMessage(received.json) ?? "The server rejected the handshake.", AuthErrorCode.HandshakeInvalid);
+            if (received.type != PacketType.IdentityProof)
+                return Reject("The server did not prove it holds its identity key before authentication, so no credential was sent. Refusing to connect.", AuthErrorCode.IdentityProofMissing);
+
+            IdentityProofPacket packet = Deserialize<IdentityProofPacket>(received.json);
+            if (packet == null || packet.Version != IdentityProofPacket.CurrentVersion || packet.Mac == null || packet.Mac.Length != 32)
+                return Reject("The server sent a malformed identity proof, so no credential was sent. Refusing to connect.", AuthErrorCode.IdentityProofInvalid);
+
+            byte[] expected = SessionAuth.ComputeIdentityProof(staticSharedSecret, transcriptHash);
+            if (!SessionAuth.FixedTimeEquals(expected, packet.Mac))
+                return Reject("The server failed to prove it holds the identity key it presented, so no credential was sent. Refusing to connect.", AuthErrorCode.IdentityProofInvalid);
+            return null;
         }
 
         private async Task<bool> AnswerRegistrationPromptAsync(SecureChannel channel, string json, string registrationPassword, byte[] transcriptHash, CancellationToken ct)

@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using SFSEnhanced.Server.World;
+using SFSEnhanced.Shared.Models;
 using SFSEnhanced.Shared.Protocol;
 
 namespace SFSEnhanced.Server.Social
@@ -24,31 +25,65 @@ namespace SFSEnhanced.Server.Social
         public const double MaxRegionRadiusMeters = 50000.0;
         public const double MaxRegionCenterMeters = 1000000.0;
 
-        public ClaimInfo Create(string worldId, string ownerPlayerId, string ownerPlayerName, ClaimCreatePacket req)
+        public ClaimInfo Create(string worldId, string ownerPlayerId, string ownerPlayerName, ClaimCreatePacket req, out string error)
         {
+            error = null;
             var world = _worlds.Get(worldId);
-            if (world == null || req == null) return null;
-            if (world.Claims.Count >= MaxClaimsPerWorld) return null;
+            if (world == null || req == null)
+            {
+                error = "That world does not exist.";
+                return null;
+            }
+            if (world.Claims.Count >= MaxClaimsPerWorld)
+            {
+                error = "This world already has the maximum number of claims.";
+                return null;
+            }
 
             if (req.Shape == ClaimShape.Region)
             {
                 bool finite = !double.IsNaN(req.CenterX) && !double.IsInfinity(req.CenterX) &&
                               !double.IsNaN(req.CenterY) && !double.IsInfinity(req.CenterY) &&
                               !double.IsNaN(req.RadiusMeters) && !double.IsInfinity(req.RadiusMeters);
-                if (!finite) return null;
-                if (Math.Abs(req.CenterX) > MaxRegionCenterMeters || Math.Abs(req.CenterY) > MaxRegionCenterMeters) return null;
-                if (req.RadiusMeters < MinRegionRadiusMeters || req.RadiusMeters > MaxRegionRadiusMeters) return null;
+                if (!finite)
+                {
+                    error = "A region claim needs a finite centre and radius.";
+                    return null;
+                }
+                if (Math.Abs(req.CenterX) > MaxRegionCenterMeters || Math.Abs(req.CenterY) > MaxRegionCenterMeters)
+                {
+                    error = "That region is outside the map bounds this server accepts.";
+                    return null;
+                }
+                if (req.RadiusMeters < MinRegionRadiusMeters || req.RadiusMeters > MaxRegionRadiusMeters)
+                {
+                    error = $"A region radius must be between {MinRegionRadiusMeters:0} and {MaxRegionRadiusMeters:0} metres.";
+                    return null;
+                }
                 int owned = world.Claims.Count(c => c.Shape == ClaimShape.Region && c.OwnerPlayerId == ownerPlayerId);
-                if (owned >= MaxRegionClaimsPerPlayer) return null;
+                if (owned >= MaxRegionClaimsPerPlayer)
+                {
+                    error = $"You already hold {MaxRegionClaimsPerPlayer} region claims in this world.";
+                    return null;
+                }
             }
             else if (req.Shape == ClaimShape.Build)
             {
-                if (string.IsNullOrEmpty(req.BuildId)) return null;
+                if (string.IsNullOrEmpty(req.BuildId))
+                {
+                    error = "A build claim needs a build id.";
+                    return null;
+                }
                 var build = world.Builds.FirstOrDefault(b => b.BuildId == req.BuildId);
-                if (build == null || build.OwnerPlayerId != ownerPlayerId) return null;
+                if (build == null || build.OwnerPlayerId != ownerPlayerId)
+                {
+                    error = "You can only claim your own build.";
+                    return null;
+                }
             }
             else
             {
+                error = "Unknown claim type.";
                 return null;
             }
 
@@ -56,6 +91,17 @@ namespace SFSEnhanced.Server.Social
             {
                 var existing = world.Claims.FirstOrDefault(c => c.Shape == ClaimShape.Build && c.BuildId == req.BuildId);
                 if (existing != null) return existing;
+            }
+            else
+            {
+                var identical = world.Claims.FirstOrDefault(c =>
+                    c.Shape == ClaimShape.Region &&
+                    string.Equals(c.OwnerPlayerId, ownerPlayerId, StringComparison.Ordinal) &&
+                    c.CenterX == req.CenterX && c.CenterY == req.CenterY && c.RadiusMeters == req.RadiusMeters);
+                if (identical != null) return identical;
+
+                error = FindRegionConflict(world, ownerPlayerId, req);
+                if (error != null) return null;
             }
 
             var claim = new ClaimInfo
@@ -125,6 +171,36 @@ namespace SFSEnhanced.Server.Social
             return world.Claims.FirstOrDefault(c =>
                 (c.Shape == ClaimShape.Build && c.BuildId == buildId) ||
                 (c.Shape == ClaimShape.Region && build != null && WithinRadius(c, build)));
+        }
+
+        private static string FindRegionConflict(WorldRecord world, string ownerPlayerId, ClaimCreatePacket req)
+        {
+            foreach (var claim in world.Claims)
+            {
+                if (claim == null || claim.Shape != ClaimShape.Region) continue;
+                if (string.Equals(claim.OwnerPlayerId, ownerPlayerId, StringComparison.Ordinal)) continue;
+                if (!RegionsOverlap(claim, req)) continue;
+                return $"That area overlaps a region claimed by {claim.OwnerPlayerName}. Move or shrink the claim until it no longer overlaps theirs.";
+            }
+
+            foreach (var build in world.Builds)
+            {
+                if (build == null || string.Equals(build.OwnerPlayerId, ownerPlayerId, StringComparison.Ordinal)) continue;
+                double dx = build.PosX - req.CenterX;
+                double dy = build.PosY - req.CenterY;
+                if (dx * dx + dy * dy > req.RadiusMeters * req.RadiusMeters) continue;
+                return $"That area contains a build owned by {build.OwnerPlayerName ?? "another player"}. Region claims cannot cover another player's build.";
+            }
+
+            return null;
+        }
+
+        private static bool RegionsOverlap(ClaimInfo existing, ClaimCreatePacket req)
+        {
+            double dx = existing.CenterX - req.CenterX;
+            double dy = existing.CenterY - req.CenterY;
+            double sum = existing.RadiusMeters + req.RadiusMeters;
+            return dx * dx + dy * dy < sum * sum;
         }
 
         private static bool WithinRadius(ClaimInfo claim, BuildSnapshot build)

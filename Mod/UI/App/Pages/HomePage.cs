@@ -34,7 +34,7 @@ namespace SFSEnhanced.Mod.UI.App.Pages
 
             UiKit.Section(host, "QUICK ACTIONS", -126);
             UiKit.Primary(host, 232, 40, -250, -170, "BROWSE SERVERS", () => app.Navigate(AppShell.ServersPageId));
-            UiKit.Secondary(host, 232, 40, 0, -170, "BROWSE WORLDS", () => app.Navigate(AppShell.WorldsPageId));
+            UiKit.Secondary(host, 232, 40, 0, -170, "BROWSE ROOMS", () => app.Navigate(AppShell.RoomsPageId));
             UiKit.Secondary(host, 232, 40, 250, -170, "YOUR PROFILE", () => app.Navigate(AppShell.ProfilePageId));
 
             _inviteKey = null;
@@ -71,11 +71,11 @@ namespace SFSEnhanced.Mod.UI.App.Pages
                 UiKit.Section(_continueRegion, "CONTINUE", 54);
                 if (!string.IsNullOrEmpty(state.CurrentWorldId))
                 {
-                    UiKit.ListRow(_continueRegion, 14, state.RoomLabel(), $"{state.CurrentWorldBuilds} builds · {state.CurrentWorldPlayers} players", "OPEN", () => app.Navigate(AppShell.WorldsPageId));
+                    UiKit.ListRow(_continueRegion, 14, state.RoomLabel(), $"{state.CurrentWorldBuilds} builds · {state.CurrentWorldPlayers} players", "OPEN", () => app.Navigate(AppShell.RoomsPageId));
                 }
                 else
                 {
-                    UiKit.EmptyState(_continueRegion, 14, "You are not in a world", "Join a public world or create your own to fly with other players.");
+                    UiKit.EmptyState(_continueRegion, 14, "You are not in a room", "Join a public room or open your own to fly with other players.");
                 }
             }
         }

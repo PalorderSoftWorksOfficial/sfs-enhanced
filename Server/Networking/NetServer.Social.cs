@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using SFSEnhanced.Server.Social;
 using SFSEnhanced.Shared.Models;
 using SFSEnhanced.Shared.Protocol;
 
@@ -42,7 +43,7 @@ namespace SFSEnhanced.Server.Networking
             }
             if (req.Shape == ClaimShape.Region && !IsValidRegionClaim(req))
             {
-                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "A region claim needs a finite centre and a radius between 1 and 50000 metres." });
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Code = "claim_rejected", Message = "A region claim needs a finite centre and a radius between 1 and 50000 metres." });
                 return;
             }
             if (req.Shape == ClaimShape.Build)
@@ -54,10 +55,10 @@ namespace SFSEnhanced.Server.Networking
                     return;
                 }
             }
-            var claim = _claims.Create(req.WorldId, conn.Account.PlayerId, conn.Account.PlayerName, req);
+            var claim = _claims.Create(req.WorldId, conn.Account.PlayerId, conn.Account.PlayerName, req, out string claimError);
             if (claim == null)
             {
-                await conn.SendAsync(PacketType.Error, new ErrorPacket { Message = "That claim is outside the server's limits." });
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Code = "claim_rejected", Message = claimError ?? "That claim is outside the server's limits." });
                 return;
             }
             await BroadcastToWorld(req.WorldId, PacketType.ClaimCreate, claim, null);
@@ -71,11 +72,18 @@ namespace SFSEnhanced.Server.Networking
 
         private async Task HandleChat(ClientConnection conn, ChatMessagePacket msg)
         {
-            if (msg == null || string.IsNullOrWhiteSpace(msg.Message)) return;
+            if (msg == null) return;
             if (!TryConsume(conn.Account.PlayerId, "chat", 8, 2.0))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Code = "chat_rate_limited", Message = "You are sending messages too quickly. Wait a moment and retry." });
                 return;
-            msg.Message = msg.Message.Trim();
-            if (msg.Message.Length > 512) msg.Message = msg.Message.Substring(0, 512);
+            }
+            if (!ChatTextFilter.TryClean(msg.Message, out string cleaned, out string reason))
+            {
+                await conn.SendAsync(PacketType.Error, new ErrorPacket { Code = "chat_rejected", Message = reason });
+                return;
+            }
+            msg.Message = cleaned;
             msg.FromPlayerName = conn.Account.PlayerName;
             msg.SentUtc = DateTime.UtcNow;
             if (!string.IsNullOrEmpty(msg.WorldId))

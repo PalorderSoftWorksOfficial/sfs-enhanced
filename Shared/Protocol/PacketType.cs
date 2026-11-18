@@ -17,6 +17,7 @@ namespace SFSEnhanced.Shared.Protocol
         AuthResult = 7,         // S->C: session established (from here everything is sealed)
         RegistrationPrompt = 8, // S->C: sealed, the server asks for a registration password proof
         RegistrationAuth = 9,   // C->S: sealed, HMAC over the registration password inside the secure channel
+        IdentityProof = 15,     // S->C: sealed, proves the server holds its identity key before the client sends a token MAC
 
         // --- Server / world discovery ---
         ServerInfoRequest = 10, // C->S
@@ -76,6 +77,16 @@ namespace SFSEnhanced.Shared.Protocol
         ProfileResponse = 81,
         ProfileUpdate = 82,
         ProfileUpdateResult = 83,
+
+        // --- Rooms ---
+        RoomCreate = 90,
+        RoomState = 91,
+        RoomListRequest = 92,
+        RoomListResponse = 93,
+        RoomJoin = 94,
+        RoomLeave = 96,
+        RoomClose = 97,
+        RoomClosed = 98,
 
         Error = 255,
         AuthError = 254,
