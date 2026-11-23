@@ -65,6 +65,12 @@ namespace SFSEnhanced.Mod.Controls
 
         public static void BeginCapture(ShortcutAction action)
         {
+            if (SceneManager.GetActiveScene().name == "World_PC")
+            {
+                Status = "Return to the home screen before changing shortcuts. This prevents a capture key from affecting an active flight.";
+                NotifyChanged();
+                return;
+            }
             _captureAction = action;
             Status = "Press a key or joystick button. Escape cancels.";
             NotifyChanged();
@@ -195,7 +201,7 @@ namespace SFSEnhanced.Mod.Controls
         private static bool ConflictsWithNative(ShortcutBinding binding, out string actionName)
         {
             actionName = null;
-            if (binding.Key == KeyCode.None || binding.Shift || binding.Alt) return false;
+            if (binding.Key == KeyCode.None) return false;
             KeybindingsPC.Data data = KeybindingsPC.keys;
             if (data == null) return false;
             foreach (FieldInfo field in typeof(KeybindingsPC.Data).GetFields(BindingFlags.Public | BindingFlags.Instance))
