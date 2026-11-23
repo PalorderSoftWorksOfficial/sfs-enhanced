@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using SFSEnhanced.Mod.UI.App.Pages;
 using SFSEnhanced.Mod.UI.Kit;
+using SFSEnhanced.Mod.Packaging;
+using SFSEnhanced.Mod.Controls;
 using SFSEnhanced.Shared.Protocol;
 using SFS.UI.ModGUI;
 using TMPro;
@@ -12,6 +14,11 @@ namespace SFSEnhanced.Mod.UI.App
     internal sealed class AppShell
     {
         public const string HomePageId = "home";
+        public const string MainPageId = HomePageId;
+        public const string MultiplayerPageId = "multiplayer";
+        public const string PackagesPageId = "packages";
+        public const string ControlsPageId = "controls";
+        public const string AboutPageId = "about";
         public const string ServersPageId = "servers";
         public const string RoomsPageId = "rooms";
         public const string FriendsPageId = "friends";
@@ -39,13 +46,17 @@ namespace SFSEnhanced.Mod.UI.App
         public AppShell(IAppActions app)
         {
             _app = app;
+            _pages.Add(new MainMenuPage());
             _pages.Add(new HomePage());
             _pages.Add(new ServersPage());
             _pages.Add(new RoomsPage());
             _pages.Add(new FriendsPage());
             _pages.Add(new ChatPage());
             _pages.Add(new ProfilePage());
+            _pages.Add(new PackagesPage());
             _pages.Add(new SettingsPage());
+            _pages.Add(new ControlsPage());
+            _pages.Add(new AboutPage());
         }
 
         public void Build(Transform parent)
@@ -62,17 +73,17 @@ namespace SFSEnhanced.Mod.UI.App
             UiKit.Divider(_root, 940, 216);
 
             UiKit.Label(_root, 180, 18, -405, 286, "SFS ENHANCED", 12f, Theme.TextMuted);
-            int navY = 246;
+            int navY = 236;
             foreach (AppPage page in _pages)
             {
                 string pageId = page.Id;
-                SFS.UI.ModGUI.Button button = UiKit.Secondary(_root, 180, 36, -405, navY, page.Title.ToUpperInvariant(), () => Navigate(pageId));
+                SFS.UI.ModGUI.Button button = UiKit.Secondary(_root, 180, 34, -405, navY, page.Title.ToUpperInvariant(), () => Navigate(pageId));
                 _navButtons[pageId] = button;
-                navY -= 44;
+                navY -= 40;
             }
 
-            _navServer = UiKit.Label(_root, 180, 18, -405, -132, string.Empty, 11f, Theme.TextMuted);
-            _navAccount = UiKit.Label(_root, 180, 20, -405, -156, string.Empty, 12f, Theme.TextPrimary);
+            _navServer = UiKit.Label(_root, 180, 18, -405, -200, string.Empty, 11f, Theme.TextMuted);
+            _navAccount = UiKit.Label(_root, 180, 20, -405, -224, string.Empty, 12f, Theme.TextPrimary);
 
             Box rail = Builder.CreateBox(_root, 2, 496, -300, 14, 0.08f);
             rail.Color = Theme.TextMuted;
@@ -87,6 +98,8 @@ namespace SFSEnhanced.Mod.UI.App
 
             _app.State.Changed += RenderChrome;
             _app.State.ContentChanged += UpdateContent;
+            PackageManager.Changed += UpdateContent;
+            ModControlBindings.Changed += UpdateContent;
             _built = true;
             RenderPage();
             RenderChrome();
@@ -182,6 +195,8 @@ namespace SFSEnhanced.Mod.UI.App
             if (!_built) return;
             _app.State.Changed -= RenderChrome;
             _app.State.ContentChanged -= UpdateContent;
+            PackageManager.Changed -= UpdateContent;
+            ModControlBindings.Changed -= UpdateContent;
             if (_window != null) UnityEngine.Object.Destroy(_window.gameObject);
             _window = null;
             _root = null;

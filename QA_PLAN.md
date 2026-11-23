@@ -126,18 +126,27 @@ console hang).
   experiment.
 - Rooms are not persisted, so no restart test exists yet (BUGS B-19).
 
+## Controls and disable lifecycle checks
+
+- Open Home → Controls and verify the menu shortcut defaults to F8 and torque defaults to Ctrl+T.
+- Rebind each shortcut, confirm Ctrl/Shift/Alt combinations are displayed correctly, save, close/reopen the shell, and verify persistence.
+- Attempt to assign the same key combination to both actions; the second assignment must be rejected without changing either binding.
+- Press Escape during key capture and verify cancellation. Type F8 into a focused text field and verify it does not toggle the shell.
+- Verify joystick-button capture and trigger where a supported controller is available.
+- Disable SFS Enhanced from Controls while the shell is open. Confirm the shell and cloned entry buttons are removed, network traffic stops, remote rockets are destroyed, synchronized world time returns to its pre-sync value, texture/material overrides are restored, and the Harmony owner id has no remaining patches.
+- Verify vanilla unit formatting, camera limits, timewarp limits, TWR/throttle UI and torque behavior after disable. Verify the game remains stable through Home → Play → flight → Home.
+- Confirm the managed assembly remains loaded until restart and that the UI accurately communicates this limitation.
+
 ## 8. In-game probe (user)
 
-1. Build the mod (`dotnet build SFSEnhanced.sln -c Release`, or install the produced `.pack`).
-2. Launch SFS, open Play → Multiplayer. Confirm the window mounts on `Base_PC` at 1000×640, that the
-   seven nav entries fit, and that Escape walks back and then closes.
-3. Connect for the first time: the identity panel shows the 64-hex fingerprint in four lines plus the
-   grouped short form; CANCEL stores nothing; TRUST AND CONNECT succeeds.
-4. Create an account on a fresh server, reconnect with it, and confirm a wrong name reports
-   "no account on this server".
-5. On a password server, confirm the password field appears only after the server asks.
-6. Rooms: open a public room, join from a second client, fill capacity, leave, close as host, and
-   confirm the closed room disappears from the list.
-7. Chat: send `<b>x</b>` and confirm the refusal message; send a newline/zero-width message and confirm
-   it renders collapsed.
-8. F8 must be inert inside the flight scene.
+1. Install the built SFS Enhanced pack in the SFS Mods folder and launch SFS. Confirm the SFS Enhanced home screen opens automatically after the native Home screen initializes.
+2. Confirm the original Play, Settings, Community, Tutorials, Credits, Full Version, Website, and Quit actions work. Play must open the original SFS world selector. The SFS Enhanced entry in the native home and world-selection menus must return to the new shell.
+3. Confirm the home page exposes Multiplayer, Mods & Packs, Friends, and About. Check the server browser, rooms, friends, chat, profile, and settings pages.
+4. Enter a world and press F8. Confirm the shell appears as a non-pausing overlay, the simulation continues, package management works, and F8 closes the overlay. Escape should walk back through page history before closing the shell.
+5. Install a texture package while in flight. Confirm the replacement appears on matching planets/materials without restarting SFS. Disable it and confirm the original textures return. Re-enable and remove it, confirming no replacement references remain.
+6. Install a solar-system package. Confirm it appears in the native Create World selector without restarting. Create a world with it, return to the shell, and confirm removing the active system is refused until the world is exited.
+7. Install an experimental-mod package. Confirm it is labeled experimental and restart-required. Remove it and confirm the UI still communicates that an already-loaded assembly cannot be unloaded from the current process.
+8. Test an archive with a bad manifest, a path-traversal target, a missing solar-system Import_Settings.txt, and a texture image outside the package's own Assets folder. Each must fail without changing existing game files.
+9. Reopen the SFS Enhanced shell after using native SFS screens and after returning from a world. Check nav clipping, pagination, long package names, and the bottom status line.
+
+The current development host has no Spaceflight Simulator runtime. The build and package smoke tests below are not a substitute for this visual and gameplay probe.

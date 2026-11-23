@@ -23,11 +23,40 @@ namespace SFSEnhanced.Mod.Integrated
         public static bool TorqueToggle { get; set; } = true;
         private static Harmony _harmony;
 
+        private const string HarmonyId = "sfs-enhanced.vanillaupgrades";
+
         public static void Initialize()
         {
             if (!Enabled || _harmony != null) return;
-            _harmony = new Harmony("sfs-enhanced.vanillaupgrades");
-            _harmony.PatchAll(typeof(VanillaUpgradesIntegration).Assembly);
+            var harmony = new Harmony(HarmonyId);
+            try
+            {
+                harmony.PatchAll(typeof(VanillaUpgradesIntegration).Assembly);
+                _harmony = harmony;
+            }
+            catch
+            {
+                harmony.UnpatchAll(HarmonyId);
+                throw;
+            }
+        }
+
+        public static void Shutdown()
+        {
+            if (_harmony != null)
+            {
+                _harmony.UnpatchAll(HarmonyId);
+                _harmony = null;
+            }
+            Enabled = false;
+            ExtendedCamera = true;
+            ExtendedPhysicsTimewarp = true;
+            AccurateTwr = true;
+            ExtendedUnits = true;
+            ThrottleAccuracy = true;
+            StopWarpOnEncounter = true;
+            TorqueToggle = true;
+            TorqueTogglePatch.Reset();
         }
 
         public static bool MultiplayerTimeLocked => ModMain.Instance?.Client?.IsConnected == true;
@@ -213,6 +242,11 @@ namespace SFSEnhanced.Mod.Integrated
             if (!VanillaUpgradesIntegration.TorqueToggle || PlayerController.main == null || !PlayerController.main.HasControl(MsgDrawer.main)) return;
             _disabled = !_disabled;
             MsgDrawer.main.Log("Torque " + (_disabled ? "Disabled" : "Enabled"));
+        }
+
+        public static void Reset()
+        {
+            _disabled = false;
         }
 
         private static bool Prefix(ref float __result)

@@ -55,6 +55,10 @@
       <HintPath>..\Dependencies\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>..\Dependencies\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Unity.TextMeshPro">
       <HintPath>..\Dependencies\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
@@ -81,7 +85,7 @@
       <SfsPackPayloadDir Condition="$(OutputPath.EndsWith('\'))">$(OutputPath.Substring(0, $([MSBuild]::Add($(OutputPath.Length), -1))))</SfsPackPayloadDir>
       <SfsPackPayloadDir Condition="'$(SfsPackPayloadDir)' == ''">$(OutputPath)</SfsPackPayloadDir>
     </PropertyGroup>
-    <Exec Command="dotnet &quot;$(MSBuildThisFileDirectory)..\tools\BuildSfsPack\bin\$(Configuration)\net8.0\BuildSfsPack.dll&quot; --out &quot;$(SfsPackOutput)&quot; --id sfs-enhanced --name &quot;SFS Enhanced&quot; --version $(SfsPackVersion) --description &quot;SFS Enhanced multiplayer mod: secure UDP multiplayer, shared worlds, friends, and chat.&quot; --min-sfs-enhanced 0.1.1 --dir &quot;$(SfsPackPayloadDir)&quot; &quot;Mods/SFSEnhanced&quot;" />
+    <Exec Command="dotnet &quot;$(MSBuildThisFileDirectory)../tools/BuildSfsPack/bin/$(Configuration)/net8.0/BuildSfsPack.dll&quot; --out &quot;$(SfsPackOutput)&quot; --id sfs-enhanced --name &quot;SFS Enhanced&quot; --version $(SfsPackVersion) --description &quot;SFS Enhanced multiplayer mod: secure UDP multiplayer, shared worlds, friends, and chat.&quot; --min-sfs-enhanced 0.1.1 --dir &quot;$(SfsPackPayloadDir)&quot; &quot;Mods/SFSEnhanced&quot;" />
   </Target>
 
 </Project>

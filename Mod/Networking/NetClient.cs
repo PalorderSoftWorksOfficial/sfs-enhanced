@@ -50,6 +50,7 @@ namespace SFSEnhanced.Mod.Networking
         private bool _lastCreateAccount;
         private ServerIdentityGate _lastGate;
         private PendingIdentityApproval _approval;
+        private bool _disposed;
 
         public string PlayerId { get; private set; }
         public string AuthToken { get; private set; }
@@ -82,6 +83,7 @@ namespace SFSEnhanced.Mod.Networking
 
         public async Task<bool> ConnectAsync(string host, int? port, string playerName, string registrationPassword, bool createAccount)
         {
+            if (_disposed) return false;
             Disconnect();
             PendingIdentity = null;
             LastConnectError = null;
@@ -90,6 +92,7 @@ namespace SFSEnhanced.Mod.Networking
             {
                 int generation = Interlocked.Increment(ref _connectionGeneration);
                 CanonicalEndpoint endpoint = await ServerEndpointResolver.ResolveAsync(host, port).ConfigureAwait(false);
+                if (_disposed || generation != Volatile.Read(ref _connectionGeneration)) return false;
                 _lastHost = host;
                 _lastPort = port;
                 _lastPlayerName = playerName;
@@ -118,6 +121,7 @@ namespace SFSEnhanced.Mod.Networking
                 if (await Task.WhenAny(_connectTcs.Task, Task.Delay(TimeSpan.FromSeconds(12))).ConfigureAwait(false) != _connectTcs.Task)
                     throw new TimeoutException("Timed out connecting to the multiplayer server.");
                 if (!await _connectTcs.Task.ConfigureAwait(false)) throw new InvalidOperationException("The multiplayer transport rejected the connection.");
+                if (_disposed || generation != Volatile.Read(ref _connectionGeneration)) return false;
 
                 var handshake = new SecureHandshakeClient(new LidgrenSecureTransport(this));
                 SecureHandshakeResult result = await handshake.RunAsync(playerName, token, "0.1.0", registrationPassword, _cts.Token, _lastGate, createAccount).ConfigureAwait(false);
@@ -152,6 +156,7 @@ namespace SFSEnhanced.Mod.Networking
                     _lastGate.Verify(result.Identity, null);
                 }
 
+                if (_disposed || generation != Volatile.Read(ref _connectionGeneration)) return false;
                 _approval = null;
                 _channel = result.Channel;
                 PlayerId = result.PlayerId;
@@ -256,6 +261,17 @@ namespace SFSEnhanced.Mod.Networking
                 MigrationNotice = "A saved login token exists, but the server it belongs to could not be determined, so it was kept and will not be sent to any server. Connect to that server again to reclaim the account.";
         }
 
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            Disconnect();
+            IdentityPromptChanged = null;
+            OnPacket = null;
+            ProfileChanged = null;
+            Disconnected = null;
+        }
+
         public void Disconnect()
         {
             Interlocked.Increment(ref _connectionGeneration);
@@ -272,7 +288,7 @@ namespace SFSEnhanced.Mod.Networking
             _peer = null;
             _cts?.Cancel();
             _cts = null;
-            _pendingFrames.CompleteAdding();
+            if (!_pendingFrames.IsAddingCompleted) _pendingFrames.CompleteAdding();
             while (_incoming.TryDequeue(out _)) { }
             while (_pendingFrames.TryTake(out _)) { }
         }

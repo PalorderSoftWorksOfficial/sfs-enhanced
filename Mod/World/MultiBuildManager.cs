@@ -22,6 +22,11 @@ namespace SFSEnhanced.Mod.World
         private double _serverWorldTime;
         private double _serverTimewarp = 1.0;
         private bool _hasServerWorldTime;
+        private bool _worldTimeCaptured;
+        private bool _originalRealtimePhysics;
+        private double _originalWorldTime;
+        private double _originalTimewarpSpeed;
+        private bool _disposed;
         private readonly Dictionary<string, float> _partCache = new Dictionary<string, float>();
         private const float PublishInterval = 1f / 15f;
         private const float TimeSyncInterval = 0.25f;
@@ -52,6 +57,36 @@ namespace SFSEnhanced.Mod.World
             _publishTimer = 0f;
             _timeCorrectionTimer = 0f;
             _hasServerWorldTime = false;
+            RestoreWorldTime();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _client.OnPacket -= HandlePacket;
+            if (!string.IsNullOrEmpty(_localBuildId) && _client.IsConnected) PublishRemove(_localBuildId);
+            ResetWorld();
+        }
+
+        private void CaptureWorldTime()
+        {
+            if (_worldTimeCaptured || WorldTime.main == null) return;
+            _originalWorldTime = WorldTime.main.worldTime;
+            _originalTimewarpSpeed = WorldTime.main.timewarpSpeed;
+            _originalRealtimePhysics = WorldTime.main.realtimePhysics.Value;
+            _worldTimeCaptured = true;
+        }
+
+        private void RestoreWorldTime()
+        {
+            if (!_worldTimeCaptured) return;
+            if (WorldTime.main != null)
+            {
+                WorldTime.main.worldTime = _originalWorldTime;
+                WorldTime.main.SetState(_originalTimewarpSpeed, _originalRealtimePhysics, false);
+            }
+            _worldTimeCaptured = false;
         }
 
         private void HandlePacket(PacketType type, string json)
@@ -220,8 +255,10 @@ namespace SFSEnhanced.Mod.World
 
         public void TickInterpolation(float deltaTime)
         {
+            if (_disposed) return;
             if (_hasServerWorldTime && WorldTime.main != null && !double.IsNaN(_serverWorldTime))
             {
+                CaptureWorldTime();
                 _timeCorrectionTimer += deltaTime;
                 _serverWorldTime += deltaTime * _serverTimewarp;
                 if (_timeCorrectionTimer >= TimeSyncInterval)
@@ -242,7 +279,7 @@ namespace SFSEnhanced.Mod.World
 
         public void TickLocalPublish(float deltaTime)
         {
-            if (!_client.IsConnected || string.IsNullOrEmpty(_client.CurrentWorldId) || GameManager.main == null) return;
+            if (_disposed || !_client.IsConnected || string.IsNullOrEmpty(_client.CurrentWorldId) || GameManager.main == null) return;
             if (!(PlayerController.main?.player?.Value is Rocket local)) return;
             if (_localRocket != local)
             {

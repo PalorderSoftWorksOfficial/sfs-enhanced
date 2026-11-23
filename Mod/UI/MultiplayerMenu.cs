@@ -25,14 +25,21 @@ namespace SFSEnhanced.Mod.UI
         private MultiplayerScreen _screen;
         private GameObject _screenHolder;
         private Screen_Base _previousScreen;
-        private SFS.UI.Button _playButton;
-        private GameObject _playMenu;
+        private SFS.UI.Button _homeEntryButton;
+        private GameObject _homeEntryMenu;
+        private SFS.UI.Button _worldEntryButton;
+        private GameObject _worldEntryMenu;
         private string _host;
         private int? _port;
         private long _chatSequence;
         private string _forgetArmedEndpointKey;
         private string _forgetArmedFingerprint;
         private float _forgetArmedAt;
+        private readonly Action _profileChangedHandler;
+        private readonly Action _disconnectedHandler;
+        private readonly Action _identityPromptChangedHandler;
+        private readonly Action<Scene> _homeSceneUnloadedHandler;
+        private readonly Action<Scene> _worldSceneUnloadedHandler;
 
         public AppState State => _state;
 
@@ -42,21 +49,43 @@ namespace SFSEnhanced.Mod.UI
         {
             _mod = mod;
             _host = ModSettings.Host;
-            _mod.Client.OnPacket += OnPacket;
-            _mod.Client.ProfileChanged += () => _state.NotifyContent();
-            _mod.Client.Disconnected += () => RunOnMainThread(HandleTransportDrop);
-            _mod.Client.IdentityPromptChanged += () => RunOnMainThread(() =>
+            _profileChangedHandler = () => _state.NotifyContent();
+            _disconnectedHandler = () => RunOnMainThread(HandleTransportDrop);
+            _identityPromptChangedHandler = () => RunOnMainThread(() =>
             {
                 _state.PendingIdentity = _mod.Client.PendingIdentity;
                 _state.NotifyContent();
             });
-            _state.MigrationNotice = _mod.Client.MigrationNotice;
-            SceneHelper.OnHomeSceneUnloaded += new Action<Scene>(_ =>
+            _homeSceneUnloadedHandler = _ =>
             {
                 Hide();
                 CleanupOnHomeUnload();
-            });
-            SceneHelper.OnWorldSceneUnloaded += new Action<Scene>(_ => Hide());
+            };
+            _worldSceneUnloadedHandler = _ => Hide();
+            _mod.Client.OnPacket += OnPacket;
+            _mod.Client.ProfileChanged += _profileChangedHandler;
+            _mod.Client.Disconnected += _disconnectedHandler;
+            _mod.Client.IdentityPromptChanged += _identityPromptChangedHandler;
+            _state.MigrationNotice = _mod.Client.MigrationNotice;
+            SceneHelper.OnHomeSceneUnloaded += _homeSceneUnloadedHandler;
+            SceneHelper.OnWorldSceneUnloaded += _worldSceneUnloadedHandler;
+        }
+
+        public void EnsureHomeButton()
+        {
+            HomeManager home = HomeManager.main;
+            SFS.UI.Button source = NativeHomeMenu.FindPlayButton();
+            if (home == null || source == null || source.transform.parent == null) return;
+            if (_homeEntryButton != null && _homeEntryMenu == home.gameObject) return;
+            if (_homeEntryButton != null) UnityEngine.Object.Destroy(_homeEntryButton.gameObject);
+            _homeEntryButton = UnityEngine.Object.Instantiate(source, source.transform.parent);
+            _homeEntryButton.name = "SFSEnhanced Home Entry";
+            _homeEntryButton.onClick = new OptionalDelegate<OnInputEndData>();
+            _homeEntryButton.onClick += (Action<OnInputEndData>)(_ => Show());
+            var text = _homeEntryButton.GetComponentInChildren<TextAdapter>(true);
+            if (text != null) text.Text = "SFS ENHANCED";
+            _homeEntryButton.transform.SetAsLastSibling();
+            _homeEntryMenu = home.gameObject;
         }
 
         public void EnsurePlayButton()
@@ -64,19 +93,27 @@ namespace SFSEnhanced.Mod.UI
             var menus = UnityEngine.Object.FindObjectsOfType<WorldsMenu>();
             if (menus == null || menus.Length == 0) return;
             var menu = menus[0];
-            if (_playButton != null && _playMenu == menu.gameObject) return;
+            if (_worldEntryButton != null && _worldEntryMenu == menu.gameObject) return;
             if (menu.worldButtons == null || menu.worldButtons.Length == 0) return;
             var source = menu.worldButtons[0];
             if (source == null || source.transform.parent == null) return;
-            if (_playButton != null) UnityEngine.Object.Destroy(_playButton.gameObject);
-            _playButton = UnityEngine.Object.Instantiate(source, source.transform.parent);
-            _playButton.name = "SFSEnhanced Multiplayer Button";
-            _playButton.onClick = new OptionalDelegate<OnInputEndData>();
-            _playButton.onClick += (Action<OnInputEndData>)(_ => Show());
-            var text = _playButton.GetComponentInChildren<TextAdapter>();
-            if (text != null) text.Text = "MULTIPLAYER";
-            _playButton.transform.SetAsLastSibling();
-            _playMenu = menu.gameObject;
+            if (_worldEntryButton != null) UnityEngine.Object.Destroy(_worldEntryButton.gameObject);
+            _worldEntryButton = UnityEngine.Object.Instantiate(source, source.transform.parent);
+            _worldEntryButton.name = "SFSEnhanced World Entry";
+            _worldEntryButton.onClick = new OptionalDelegate<OnInputEndData>();
+            _worldEntryButton.onClick += (Action<OnInputEndData>)(_ => Show());
+            var text = _worldEntryButton.GetComponentInChildren<TextAdapter>(true);
+            if (text != null) text.Text = "SFS ENHANCED";
+            _worldEntryButton.transform.SetAsLastSibling();
+            _worldEntryMenu = menu.gameObject;
+        }
+
+        public void EnsureMainMenu()
+        {
+            if (_screen != null || SceneManager.GetActiveScene().name != "Home_PC") return;
+            if (HomeManager.main == null || ScreenManager.main == null) return;
+            if (ScreenManager.main.CurrentScreen != HomeManager.main) return;
+            Show();
         }
 
         public void Toggle()
@@ -94,7 +131,7 @@ namespace SFSEnhanced.Mod.UI
             Show();
         }
 
-        public bool CanOpenHere() => _screen != null || SceneManager.GetActiveScene().name != "World_PC";
+        public bool CanOpenHere() => ScreenManager.main != null;
 
         public void Show()
         {
@@ -102,12 +139,6 @@ namespace SFSEnhanced.Mod.UI
             if (ScreenManager.main == null)
             {
                 Debug.LogWarning("[SFSEnhanced] ScreenManager is unavailable; the multiplayer screen cannot open.");
-                return;
-            }
-
-            if (SceneManager.GetActiveScene().name == "World_PC")
-            {
-                Debug.LogWarning("[SFSEnhanced] The full shell is disabled in flight; a non-pausing overlay is not implemented yet.");
                 return;
             }
 
@@ -137,7 +168,7 @@ namespace SFSEnhanced.Mod.UI
             GameObject holder;
             try
             {
-                holder = SFS.UI.ModGUI.Builder.CreateHolder(mode, "SFSEnhanced_MultiplayerScreen");
+                holder = SFS.UI.ModGUI.Builder.CreateHolder(mode, "SFSEnhanced_MainMenu");
             }
             catch (Exception e)
             {
@@ -232,11 +263,51 @@ namespace SFSEnhanced.Mod.UI
             }
         }
 
+        public void Dispose()
+        {
+            _mod.Client.OnPacket -= OnPacket;
+            _mod.Client.ProfileChanged -= _profileChangedHandler;
+            _mod.Client.Disconnected -= _disconnectedHandler;
+            _mod.Client.IdentityPromptChanged -= _identityPromptChangedHandler;
+            SceneHelper.OnHomeSceneUnloaded -= _homeSceneUnloadedHandler;
+            SceneHelper.OnWorldSceneUnloaded -= _worldSceneUnloadedHandler;
+
+            try
+            {
+                Hide();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("[SFSEnhanced] Screen cleanup failed: " + exception.Message);
+            }
+
+            if (_screen != null)
+            {
+                try
+                {
+                    Screen_Base previous = _previousScreen != null ? _previousScreen : ScreenManager.main?.initialScreen;
+                    if (ScreenManager.main != null && previous != null) ScreenManager.main.SetStack(() => previous);
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogWarning("[SFSEnhanced] Screen stack restoration failed: " + exception.Message);
+                }
+                OnScreenClosed();
+            }
+
+            DestroyWindow();
+            CleanupOnHomeUnload();
+            while (_deferred.TryDequeue(out _)) { }
+        }
+
         public void CleanupOnHomeUnload()
         {
-            if (_playButton != null) UnityEngine.Object.Destroy(_playButton.gameObject);
-            _playButton = null;
-            _playMenu = null;
+            if (_homeEntryButton != null) UnityEngine.Object.Destroy(_homeEntryButton.gameObject);
+            if (_worldEntryButton != null) UnityEngine.Object.Destroy(_worldEntryButton.gameObject);
+            _homeEntryButton = null;
+            _homeEntryMenu = null;
+            _worldEntryButton = null;
+            _worldEntryMenu = null;
         }
 
         internal void Tick()
@@ -263,6 +334,68 @@ namespace SFSEnhanced.Mod.UI
         }
 
         public bool Back() => _shell != null && _shell.Back();
+
+        public void OpenNativePlay()
+        {
+            SFS.UI.Button playButton = NativeHomeMenu.FindPlayButton();
+            if (playButton == null)
+            {
+                SetStatus("The native SFS Play button could not be found. The original menu has not been changed.", true);
+                return;
+            }
+
+            Hide();
+            try
+            {
+                NativeHomeMenu.InvokePlayButton(playButton);
+            }
+            catch (Exception exception)
+            {
+                Show();
+                SetStatus("The native Play menu could not be opened: " + exception.Message, true);
+            }
+        }
+
+        public void OpenNativeSettings()
+        {
+            if (HomeManager.main == null) { SetStatus("The native SFS menu is unavailable.", true); return; }
+            HomeManager.main.OpenSettings();
+        }
+
+        public void OpenNativeCommunity()
+        {
+            if (HomeManager.main == null) { SetStatus("The native SFS menu is unavailable.", true); return; }
+            HomeManager.main.OpenCommunity();
+        }
+
+        public void OpenNativeTutorials()
+        {
+            HomeManager.OpenTutorials_Static();
+        }
+
+        public void OpenNativeCredits()
+        {
+            if (HomeManager.main == null) { SetStatus("The native SFS menu is unavailable.", true); return; }
+            HomeManager.main.OpenCredits();
+        }
+
+        public void OpenNativeFullVersion()
+        {
+            if (HomeManager.main == null) { SetStatus("The native SFS menu is unavailable.", true); return; }
+            HomeManager.main.OpenFullVersion();
+        }
+
+        public void OpenNativeWebsite()
+        {
+            if (HomeManager.main == null) { SetStatus("The native SFS menu is unavailable.", true); return; }
+            HomeManager.main.OpenPC();
+        }
+
+        public void OpenNativeQuit()
+        {
+            if (HomeManager.main == null) { SetStatus("The native SFS menu is unavailable.", true); return; }
+            HomeManager.main.Close();
+        }
 
         private void HandleTransportDrop()
         {

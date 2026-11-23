@@ -59,7 +59,7 @@ namespace SFSEnhanced.Shared.Packaging
                 Directory.CreateDirectory(staging);
                 ZipFile.ExtractToDirectory(archivePath, staging);
                 var manifest = LoadManifest(staging, archivePath);
-                Validate(manifest, packagesDirectory, currentSfsEnhancedVersion);
+                Validate(manifest, packagesDirectory, currentSfsEnhancedVersion, modFolder);
                 string gameRoot = ResolveGameRoot(modFolder);
                 string packageRoot = Path.Combine(packagesDirectory, InstalledDirectoryName, manifest.Id);
                 if (Directory.Exists(packageRoot)) Uninstall(manifest.Id, packagesDirectory, modFolder);
@@ -67,7 +67,7 @@ namespace SFSEnhanced.Shared.Packaging
                 Directory.CreateDirectory(packageRoot);
                 foreach (var file in manifest.Files ?? new List<PackageFile>())
                 {
-                    string target = InstallFile(staging, gameRoot, backupRoot, file);
+                    string target = InstallFile(staging, gameRoot, backupRoot, file, manifest.Type == "solar-system");
                     result.InstalledFiles.Add(target);
                 }
                 File.WriteAllText(Path.Combine(packageRoot, ManifestName), JsonConvert.SerializeObject(manifest, Formatting.Indented));
@@ -103,7 +103,7 @@ namespace SFSEnhanced.Shared.Packaging
                 string backupRoot = Path.Combine(packageRoot, BackupDirectoryName);
                 foreach (var file in manifest.Files ?? new List<PackageFile>())
                 {
-                    string target = ResolveTarget(file.Target, gameRoot);
+                    string target = ResolveTarget(file.Target, gameRoot, string.Equals(manifest.Type, "solar-system", StringComparison.OrdinalIgnoreCase));
                     string backup = GetSafePath(backupRoot, file.Target);
                     if (File.Exists(backup))
                     {
@@ -173,11 +173,44 @@ namespace SFSEnhanced.Shared.Packaging
             return manifest;
         }
 
-        private static void Validate(PackageManifest manifest, string packagesDirectory, string currentSfsEnhancedVersion)
+        private static void Validate(PackageManifest manifest, string packagesDirectory, string currentSfsEnhancedVersion, string modFolder)
         {
             if (manifest == null || string.IsNullOrWhiteSpace(manifest.Id)) throw new InvalidDataException("Invalid package manifest.");
             if (!IsSafeId(manifest.Id)) throw new InvalidDataException("Invalid package id.");
             if (string.IsNullOrWhiteSpace(manifest.Version) || !Version.TryParse(manifest.Version, out _)) throw new InvalidDataException("Invalid package version.");
+            string type = string.IsNullOrWhiteSpace(manifest.Type) ? "mod" : manifest.Type.Trim().ToLowerInvariant();
+            if (type != "mod" && type != "experimental-mod" && type != "texture" && type != "solar-system") throw new InvalidDataException("Unsupported package type.");
+            manifest.Type = type;
+            if (type == "texture")
+            {
+                string expected = "Mods/" + new DirectoryInfo(modFolder).Name + "/Packages/Assets/" + manifest.Id + "/";
+                bool hasTexture = false;
+                foreach (PackageFile file in manifest.Files ?? new List<PackageFile>())
+                {
+                    string target = (file?.Target ?? string.Empty).Replace('\\', '/');
+                    string extension = Path.GetExtension(target).ToLowerInvariant();
+                    if (!target.StartsWith(expected, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Texture package files must be stored in the package's own Assets directory.");
+                    string relative = target.Substring(expected.Length);
+                    if (!IsSafePackageRelativePath(relative) || (extension != ".png" && extension != ".jpg" && extension != ".jpeg")) throw new InvalidDataException("Texture package files must be safe image paths.");
+                    hasTexture = true;
+                }
+                if (!hasTexture) throw new InvalidDataException("Texture package contains no image files.");
+            }
+            if (type == "solar-system")
+            {
+                if (!IsSafeFolderName(manifest.SolarSystemName)) throw new InvalidDataException("Solar-system package has an invalid solarSystemName.");
+                string expected = "Spaceflight Simulator_Data/Custom Solar Systems/" + manifest.SolarSystemName + "/";
+                bool hasImportSettings = false;
+                foreach (PackageFile file in manifest.Files ?? new List<PackageFile>())
+                {
+                    string target = (file?.Target ?? string.Empty).Replace('\\', '/');
+                    if (!target.StartsWith(expected, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Solar-system package files must stay inside their declared solar-system folder.");
+                    string relative = target.Substring(expected.Length);
+                    if (!IsSafePackageRelativePath(relative)) throw new InvalidDataException("Solar-system package contains an unsafe file path.");
+                    if (target.Equals(expected + "Import_Settings.txt", StringComparison.OrdinalIgnoreCase)) hasImportSettings = true;
+                }
+                if (!hasImportSettings) throw new InvalidDataException("Solar-system package is missing Import_Settings.txt.");
+            }
             if (!string.IsNullOrWhiteSpace(manifest.MinimumSfsEnhancedVersion) && !string.IsNullOrEmpty(currentSfsEnhancedVersion))
             {
                 if (!Version.TryParse(manifest.MinimumSfsEnhancedVersion, out var minimum) || minimum > Version.Parse(currentSfsEnhancedVersion))
@@ -196,11 +229,11 @@ namespace SFSEnhanced.Shared.Packaging
             }
         }
 
-        private static string InstallFile(string staging, string gameRoot, string backupRoot, PackageFile file)
+        private static string InstallFile(string staging, string gameRoot, string backupRoot, PackageFile file, bool allowSolarSystem)
         {
             if (file == null || string.IsNullOrWhiteSpace(file.Source) || string.IsNullOrWhiteSpace(file.Target)) throw new InvalidDataException("Package contains an invalid file entry.");
             string source = GetSafePath(staging, file.Source);
-            string target = ResolveTarget(file.Target, gameRoot);
+            string target = ResolveTarget(file.Target, gameRoot, allowSolarSystem);
             if (!File.Exists(source)) throw new FileNotFoundException("Package source file not found.", file.Source);
             string backup = GetSafePath(backupRoot, file.Target);
             Directory.CreateDirectory(Path.GetDirectoryName(target));
@@ -213,15 +246,23 @@ namespace SFSEnhanced.Shared.Packaging
             return target;
         }
 
-        public static string ResolveTarget(string target, string gameRoot)
+        public static string ResolveTarget(string target, string gameRoot, bool allowSolarSystem = false)
         {
             if (string.IsNullOrWhiteSpace(target)) throw new InvalidDataException("Package contains an invalid file entry.");
-            target = target.Replace('/', Path.DirectorySeparatorChar).TrimStart(Path.DirectorySeparatorChar);
-            string first = target.Split(Path.DirectorySeparatorChar)[0];
+            string normalized = target.Replace('\\', '/').TrimStart('/');
+            const string solarSystemRoot = "Spaceflight Simulator_Data/Custom Solar Systems/";
+            string resolved = GetSafePath(gameRoot, normalized);
+            if (allowSolarSystem && normalized.StartsWith(solarSystemRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                string declaredRoot = Path.Combine(Path.GetFullPath(gameRoot), "Spaceflight Simulator_Data", "Custom Solar Systems") + Path.DirectorySeparatorChar;
+                if (!resolved.StartsWith(declaredRoot, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Package target escapes the custom solar-systems folder.");
+                return resolved;
+            }
+            string relative = normalized.Replace('/', Path.DirectorySeparatorChar);
+            string first = relative.Split(Path.DirectorySeparatorChar)[0];
             if (!TargetRoots.Contains(first, StringComparer.OrdinalIgnoreCase)) throw new InvalidDataException($"Unsupported package target root '{first}'.");
-            string resolved = GetSafePath(gameRoot, target);
-            string declaredRoot = Path.Combine(Path.GetFullPath(gameRoot), first) + Path.DirectorySeparatorChar;
-            if (!resolved.StartsWith(declaredRoot, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Package target escapes its declared root.");
+            string declared = Path.Combine(Path.GetFullPath(gameRoot), first) + Path.DirectorySeparatorChar;
+            if (!resolved.StartsWith(declared, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Package target escapes its declared root.");
             return resolved;
         }
 
@@ -236,5 +277,7 @@ namespace SFSEnhanced.Shared.Packaging
 
         private static string SanitizeId(string value) => new string(value.Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.').ToArray());
         private static bool IsSafeId(string id) => !string.IsNullOrWhiteSpace(id) && id.All(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.');
+        private static bool IsSafeFolderName(string value) => !string.IsNullOrWhiteSpace(value) && value != "." && value != ".." && value.IndexOfAny(new[] { '/', '\\', ':', '*', '?', '"', '<', '>', '|' }) < 0;
+        private static bool IsSafePackageRelativePath(string value) => !string.IsNullOrWhiteSpace(value) && value.Split('/').All(part => part.Length > 0 && part != "." && part != ".." && part.IndexOfAny(new[] { ':', '*', '?', '"', '<', '>', '|' }) < 0);
     }
 }

@@ -16,9 +16,9 @@ namespace SFSEnhanced.Mod.UI.App.Pages
         private string _inviteKey;
         private string _continueKey;
 
-        public override string Id => AppShell.HomePageId;
-        public override string Title => "Home";
-        public override string Subtitle => "Your session, account and shortcuts in one place.";
+        public override string Id => AppShell.MultiplayerPageId;
+        public override string Title => "Multiplayer";
+        public override string Subtitle => "Your session, account and multiplayer shortcuts in one place.";
 
         public override void Build(IAppActions app, Transform host)
         {

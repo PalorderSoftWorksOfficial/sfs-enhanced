@@ -10,6 +10,14 @@ namespace SFSEnhanced.Mod.UI.App
 
         void Navigate(string pageId);
         bool Back();
+        void OpenNativePlay();
+        void OpenNativeSettings();
+        void OpenNativeCommunity();
+        void OpenNativeTutorials();
+        void OpenNativeCredits();
+        void OpenNativeFullVersion();
+        void OpenNativeWebsite();
+        void OpenNativeQuit();
 
         void Connect(string host, string portText);
         void CreateAccount(string host, string portText, string registrationPassword);

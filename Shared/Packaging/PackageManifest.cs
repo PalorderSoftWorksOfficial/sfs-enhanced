@@ -10,6 +10,8 @@ namespace SFSEnhanced.Shared.Packaging
         public string Author { get; set; }
         public string Description { get; set; }
         public string MinimumSfsEnhancedVersion { get; set; }
+        public string Type { get; set; }
+        public string SolarSystemName { get; set; }
         public List<PackageDependency> Dependencies { get; set; } = new List<PackageDependency>();
         public List<PackageFile> Files { get; set; } = new List<PackageFile>();
     }

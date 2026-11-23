@@ -16,6 +16,7 @@ namespace SFSEnhanced.Mod.World
         private readonly Dictionary<Rocket, string> _ids = new Dictionary<Rocket, string>();
         private float _timer;
         private long _tick;
+        private bool _disposed;
         private const float Interval = 1f / 15f;
 
         public LocalRocketFleetSync(NetClient client)
@@ -32,9 +33,16 @@ namespace SFSEnhanced.Mod.World
             _tick = 0;
         }
 
+        public void Dispose()
+        {
+            if (_disposed) return;
+            Reset();
+            _disposed = true;
+        }
+
         public void Tick(float deltaTime)
         {
-            if (!_client.IsConnected || string.IsNullOrEmpty(_client.CurrentWorldId) || GameManager.main == null)
+            if (_disposed || !_client.IsConnected || string.IsNullOrEmpty(_client.CurrentWorldId) || GameManager.main == null)
                 return;
             _timer += deltaTime;
             if (_timer < Interval)

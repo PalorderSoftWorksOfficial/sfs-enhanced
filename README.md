@@ -193,22 +193,60 @@ sfs-enhanced/
 
 SFS Enhanced is distributed under the GNU General Public License v3.0 where GPL-covered upstream code has been incorporated. See `LICENSE` and `THIRD_PARTY_NOTICES.md` for the licensing and attribution record.
 
+## Controls and runtime disable
+
+SFS Enhanced adds configurable shortcuts under **Home → Controls**. The menu toggle defaults to F8; torque toggle defaults to Ctrl+T and is active only during flight. Bindings support keyboard and joystick buttons, Ctrl/Shift/Alt modifiers, conflict checking, reset-to-defaults, and ignore shortcuts while an input field is focused.
+
+The **Disable until restart** control stops the mod loop, detaches event listeners, closes and removes its menus, disconnects the network client, removes synchronized remote rockets, restores the captured vanilla world-time state and texture/material overrides, and unpatches all Harmony patches owned by sfs-enhanced.vanillaupgrades.
+
+SFS's current ModLoader loads mod assemblies with Assembly.Load(byte[]) and exposes no unload callback or unloadable assembly context. Runtime effects can be reversed, but the managed assembly itself cannot be unloaded in-process. Disabling therefore takes effect immediately and remains in effect until SFS restarts; restart is required to fully unload the assembly or enable the mod again.
+
 ## Package system
 
-SFS Enhanced supports `.pack`, `.sfspkg`, and ordinary `.zip` packages. Drop an archive into `Mods\SFS Enhanced\Packages\` and it is installed on the next mod load; the archive is consumed once installed. Packages can contain `package.json` for explicit file mappings, dependencies, and version metadata. Legacy archives without a manifest are also supported when they contain supported top-level folders such as `Mods`, `Saving`, `Resources`, `StreamingAssets`, or `UserData`.
+The SFS Enhanced shell opens automatically on the SFS home screen. Its Play action invokes the original SFS Play button, and the native Settings, Community, Tutorials, Credits, Full Version, Website, and Quit actions remain available. Multiplayer, Friends, Chat, About, and Mods & Packs are integrated into the same interface. Press F8 to open the shell as an in-game overlay; the overlay does not pause flight.
 
-Building the Mod or Server projects in Release automatically produces `artifacts\SFSEnhanced-Mod-<version>.pack` and `artifacts\SFSEnhanced-Server-<version>.pack` (override the version with `-p:SfsPackVersion=x.y.z`). The packs can be installed by dropping them into the Packages folder as above. The `tools\BuildSfsPack` tool builds custom archives: `dotnet BuildSfsPack.dll --out My.pack --id my-package --file <source> <target-under-Mods/...> --dir <folder> <targetRoot>`. Package targets may only write under `Mods`, `Saving`, `Resources`, `StreamingAssets`, or `UserData` inside the game root; escapes are rejected and pre-existing files are backed up for uninstall.
+Open **Mods & Packs** to manage content. The page shows the package directory, pending archives, installed packages, and the restart requirements of code mods. Use **Open Folder** to open the directory, copy a .pack, .sfspkg, or .zip into it, return to the game, and select **Install**. Packages are no longer silently installed during mod startup.
+
+Supported package types:
+
+| Type | Manifest type | Behavior |
+| --- | --- | --- |
+| Mod | mod | Installs files under supported game folders. Code assemblies require a game restart. |
+| Experimental mod | experimental-mod | Installed and clearly marked experimental; loading and removal of code assemblies require a restart. |
+| Texture pack | texture | Loads PNG/JPG/JPEG textures into the current game session. Enable or disable the pack in Mods & Packs to hot-replace or restore matching planet and material textures, including while in flight. |
+| Solar system | solar-system | Installs a custom solar system into SFS's Custom Solar Systems folder. It appears in the native Create World selector without restarting. Exit the world using it before uninstalling the package. |
+
+A texture pack's image targets must be placed under Mods/SFSEnhanced/Packages/Assets/<package-id>/. The filename without its extension must match an existing SFS planet texture key. For example, Earth.png replaces the texture entry named Earth.
+
+A solar-system pack must declare solarSystemName and place its files under Spaceflight Simulator_Data/Custom Solar Systems/<solarSystemName>/. It must include Import_Settings.txt and the normal SFS solar-system files such as Planet Data, Texture Data, and Heightmap Data where required. Package paths are checked for traversal and must remain inside the declared content folder.
+
+Building the Mod or Server projects in Release produces artifacts/SFSEnhanced-Mod-<version>.pack and artifacts/SFSEnhanced-Server-<version>.pack. Override the artifact version with -p:SfsPackVersion=x.y.z.
+
+The tools/BuildSfsPack utility builds custom packs. Its type options are --type mod, --type experimental-mod, --type texture, and --type solar-system. For example:
+
+~~~sh
+dotnet BuildSfsPack.dll --out MyExperimentalMod.pack --id my-experimental-mod --name "My Experimental Mod" --version 1.0.0 --type experimental-mod --dir ./ModFiles Mods/MyExperimentalMod
+~~~
+
+~~~sh
+dotnet BuildSfsPack.dll --out EarthTextures.pack --id earth-textures --name "Earth Textures" --version 1.0.0 --type texture --dir ./EarthTextures "Mods/SFSEnhanced/Packages/Assets/earth-textures"
+~~~
+
+~~~sh
+dotnet BuildSfsPack.dll --out CustomSystem.pack --id custom-system --name "Custom System" --version 1.0.0 --type solar-system --solar-system-name "Custom System" --dir ./CustomSystem "Spaceflight Simulator_Data/Custom Solar Systems/Custom System"
+~~~
 
 Example manifest:
 
-```json
+~~~json
 {
   "id": "example-package",
   "name": "Example Package",
   "version": "1.0.0",
   "author": "Author",
   "description": "Example SFS package",
-  "minimumSfsEnhancedVersion": "0.1.0",
+  "minimumSfsEnhancedVersion": "0.1.1",
+  "type": "mod",
   "dependencies": [],
   "files": [
     {
@@ -217,9 +255,9 @@ Example manifest:
     }
   ]
 }
-```
+~~~
 
-The installer resolves package targets against the actual SFS game root, validates package IDs and paths, rejects path traversal, enforces minimum SFS Enhanced and dependency versions, creates backups when existing files are replaced, tracks installed packages, supports wrapper-directory archives, and can restore files during package removal.
+The installer validates package IDs, content type, dependencies, minimum versions, and destination paths. It rejects path traversal, backs up files replaced by a package, tracks installed files, and restores those backups when a package is removed. The existing SFS Mono mod loader does not expose safe assembly unloading, so a UI cannot truthfully hot-unload arbitrary DLL mods; those packages are marked restart-required instead.
 
 ## Upstream implementation references
 

@@ -32,6 +32,8 @@ namespace SFSEnhanced.Tools.BuildSfsPack
             string author = "PalorderSoftWorksOfficial";
             string description = null;
             string minimumSfsEnhancedVersion = null;
+            string type = "mod";
+            string solarSystemName = null;
             var files = new List<(string source, string target)>();
             var dirs = new List<(string source, string targetRoot)>();
 
@@ -48,6 +50,8 @@ namespace SFSEnhanced.Tools.BuildSfsPack
                     case "--author": author = Next(); break;
                     case "--description": description = Next(); break;
                     case "--min-sfs-enhanced": minimumSfsEnhancedVersion = Next(); break;
+                    case "--type": type = Next(); break;
+                    case "--solar-system-name": solarSystemName = Next(); break;
                     case "--file":
                     {
                         string source = Next();
@@ -71,6 +75,11 @@ namespace SFSEnhanced.Tools.BuildSfsPack
             if (string.IsNullOrWhiteSpace(output)) throw new ArgumentException("--out is required.");
             if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("--id is required.");
             if (!Version.TryParse(version, out _)) throw new ArgumentException($"Invalid --version '{version}'.");
+            type = type.Trim().ToLowerInvariant();
+            if (type != "mod" && type != "experimental-mod" && type != "texture" && type != "solar-system") throw new ArgumentException("Unsupported package type.");
+            if (type == "solar-system" && string.IsNullOrWhiteSpace(solarSystemName)) throw new ArgumentException("--solar-system-name is required for solar-system packages.");
+            if (type != "solar-system" && !string.IsNullOrWhiteSpace(solarSystemName)) throw new ArgumentException("--solar-system-name is only valid for solar-system packages.");
+            if (type == "solar-system" && (solarSystemName == "." || solarSystemName == ".." || solarSystemName.IndexOfAny(new[] { '/', '\\', ':', '*', '?', '"', '<', '>', '|' }) >= 0)) throw new ArgumentException("Invalid solar-system folder name.");
             if (files.Count == 0 && dirs.Count == 0) throw new ArgumentException("At least one --file or --dir payload is required.");
 
             var manifest = new PackageManifest
@@ -80,7 +89,9 @@ namespace SFSEnhanced.Tools.BuildSfsPack
                 Version = version,
                 Author = author,
                 Description = description ?? $"{id} package built by BuildSfsPack.",
-                MinimumSfsEnhancedVersion = minimumSfsEnhancedVersion
+                MinimumSfsEnhancedVersion = minimumSfsEnhancedVersion,
+                Type = type,
+                SolarSystemName = solarSystemName
             };
 
             string payloadRoot = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output)) ?? ".", ".packpayload-" + Guid.NewGuid().ToString("N"));
@@ -103,7 +114,7 @@ namespace SFSEnhanced.Tools.BuildSfsPack
         {
             string sourceFull = Path.GetFullPath(source);
             if (!File.Exists(sourceFull)) throw new FileNotFoundException("Payload file not found.", source);
-            ValidateTarget(target);
+            ValidateTarget(target, manifest.Type, manifest.SolarSystemName);
             string stagingPath = Path.Combine(payloadRoot, target.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(stagingPath));
             File.Copy(sourceFull, stagingPath, true);
@@ -114,19 +125,36 @@ namespace SFSEnhanced.Tools.BuildSfsPack
         {
             string sourceFull = Path.GetFullPath(source);
             if (!Directory.Exists(sourceFull)) throw new DirectoryNotFoundException("Payload directory not found: " + source);
-            ValidateTarget(targetRoot + "/payload");
+            ValidateTarget(targetRoot + "/payload", manifest.Type, manifest.SolarSystemName);
             foreach (string file in Directory.GetFiles(sourceFull, "*", SearchOption.AllDirectories))
             {
-                string relative = file.Substring(sourceFull.Length + 1).Replace(Path.DirectorySeparatorChar, '/');
+                string relative = Path.GetRelativePath(sourceFull, file).Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
                 string extension = Path.GetExtension(relative).ToLowerInvariant();
                 if (extension == ".pdb" || extension == ".xml") continue;
                 AddFile(manifest, payloadRoot, file, targetRoot + "/" + relative);
             }
         }
 
-        private static void ValidateTarget(string target)
+        private static void ValidateTarget(string target, string packageType, string solarSystemName)
         {
-            string first = target.Replace('/', Path.DirectorySeparatorChar).Split(Path.DirectorySeparatorChar)[0];
+            string normalized = (target ?? string.Empty).Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(normalized) || normalized.StartsWith("/", StringComparison.Ordinal) || normalized.Split('/').Any(part => part == "." || part == ".." || part.Length == 0))
+                throw new ArgumentException("Package targets must be relative paths without traversal components.");
+
+            const string solarSystemRoot = "Spaceflight Simulator_Data/Custom Solar Systems/";
+            if (string.Equals(packageType, "solar-system", StringComparison.OrdinalIgnoreCase))
+            {
+                string expected = solarSystemRoot + solarSystemName + "/";
+                if (!normalized.StartsWith(expected, StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("Solar-system package files must stay inside the declared solar-system folder.");
+                return;
+            }
+            if (normalized.StartsWith(solarSystemRoot, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Only solar-system packages can target the Custom Solar Systems folder.");
+            if (string.Equals(packageType, "texture", StringComparison.OrdinalIgnoreCase) && !normalized.StartsWith("Mods/", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Texture packages must target the SFS Enhanced Mods folder.");
+
+            string first = normalized.Split('/')[0];
             if (!PackageInstaller.TargetRoots.Contains(first, StringComparer.OrdinalIgnoreCase))
                 throw new ArgumentException($"Target '{target}' does not start with a supported package root ({string.Join(", ", PackageInstaller.TargetRoots)}).");
         }

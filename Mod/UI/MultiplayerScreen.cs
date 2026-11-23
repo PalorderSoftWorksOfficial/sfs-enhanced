@@ -1,5 +1,6 @@
 using SFS.UI;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace SFSEnhanced.Mod.UI
 {
@@ -12,6 +13,7 @@ namespace SFSEnhanced.Mod.UI
             _controller = controller;
             menuHolder = gameObject;
             closeAnyway = true;
+            pauseWhileOpen = SceneManager.GetActiveScene().name != "World_PC";
         }
 
         public override void OnOpen()

@@ -15,6 +15,7 @@ namespace SFSEnhanced.Mod.Social
     public class FriendsUI
     {
         private readonly NetClient _client;
+        private bool _disposed;
         public List<FriendInfo> Friends { get; private set; } = new();
         public List<FriendInfo> IncomingRequests { get; private set; } = new();
         public List<FriendInfo> OutgoingRequests { get; private set; } = new();
@@ -25,9 +26,19 @@ namespace SFSEnhanced.Mod.Social
             _client.OnPacket += HandlePacket;
         }
 
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _client.OnPacket -= HandlePacket;
+            Friends.Clear();
+            IncomingRequests.Clear();
+            OutgoingRequests.Clear();
+        }
+
         private void HandlePacket(PacketType type, string json)
         {
-            if (type != PacketType.FriendListResponse) return;
+            if (_disposed || type != PacketType.FriendListResponse) return;
             var resp = Newtonsoft.Json.JsonConvert.DeserializeObject<FriendListResponsePacket>(json);
             Friends = resp.Friends;
             IncomingRequests = resp.PendingIncoming;
