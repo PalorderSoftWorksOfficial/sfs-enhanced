@@ -5,6 +5,7 @@ using ModLoader.Helpers;
 using SFSEnhanced.Mod.Controls;
 using SFSEnhanced.Mod.Networking;
 using SFSEnhanced.Mod.Packaging;
+using SFSEnhanced.Mod.Runtime;
 using SFSEnhanced.Mod.Social;
 using SFSEnhanced.Mod.UI;
 using SFSEnhanced.Mod.World;
@@ -14,9 +15,33 @@ using UnityEngine.SceneManagement;
 
 namespace SFSEnhanced.Mod
 {
-    public class ModMain : global::ModLoader.Mod
+    public class ModMain : global::ModLoader.Mod, IModRuntimeLifecycle
     {
         public const string ModId = "sfs-enhanced";
+
+        static ModMain()
+        {
+            SfsModLoaderRuntime.Install();
+        }
+
+        public string[] HarmonyOwners => new[] { "sfs-enhanced.vanillaupgrades" };
+
+        public void DisableFromControls()
+        {
+            SfsModLoaderRuntime.DisableFromControls(this);
+        }
+
+        public void OnRuntimeEnable(bool startupComplete)
+        {
+            IsDisabled = false;
+            VanillaUpgradesIntegration.Enabled = true;
+            if (startupComplete) Load();
+        }
+
+        public void OnRuntimeDisable()
+        {
+            Disable();
+        }
 
         public override string ModNameID => ModId;
         public override string DisplayName => "SFS Enhanced";
@@ -89,7 +114,7 @@ namespace SFSEnhanced.Mod
             Friends = null;
             Client = null;
             if (Instance == this) Instance = null;
-            Debug.Log("[SFSEnhanced] Disabled. Runtime patches and owned game state were restored; restart SFS to unload the managed assembly.");
+            Debug.Log("[SFSEnhanced] Runtime disabled. Owned patches and game state were restored. The native loader keeps managed assemblies in the default game context.");
         }
 
         private static void Cleanup(string label, Action action)

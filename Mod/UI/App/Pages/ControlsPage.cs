@@ -45,9 +45,9 @@ namespace SFSEnhanced.Mod.UI.App.Pages
 
             UiKit.Section(_host, "DISABLE AND RESTORE", y);
             y -= 26;
-            UiKit.Label(_host, Theme.ContentWidth, 70, 0, y, "Disabling immediately stops networking and updates, removes SFS Enhanced UI and remote rockets, restores synchronized world time and texture/material overrides, and unpatches every Harmony patch owned by SFS Enhanced. The game loader uses Assembly.Load and cannot unload a managed DLL in-process. Restart SFS to unload the assembly or enable it again.", Theme.SmallSize, Theme.Warning);
+            UiKit.Label(_host, Theme.ContentWidth, 70, 0, y, "Disabling stops networking and updates, removes SFS Enhanced UI and remote rockets, restores synchronized world time and texture/material overrides, and removes its Harmony patches. Lifecycle-aware mods can be enabled or disabled live. Legacy mods require a restart. The native Assembly.Load path keeps managed DLLs resident until SFS exits.", Theme.SmallSize, Theme.Warning);
             y -= 84;
-            UiKit.Danger(_host, 270, 38, -235, y, "DISABLE UNTIL RESTART", () => app.Mod?.Disable());
+            UiKit.Danger(_host, 270, 38, -235, y, "DISABLE SFS ENHANCED", () => app.Mod?.DisableFromControls());
         }
 
         private static void DrawBinding(Transform host, int y, string title, string description, ShortcutAction action)
